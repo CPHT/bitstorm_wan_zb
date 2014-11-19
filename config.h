@@ -49,5 +49,6 @@
 
 /*- Definitions ------------------------------------------------------------*/
 // Put your configuration option here
+#define HAL_UART_CHANNEL 1
 
 #endif // _CONFIG_H_
