@@ -63,12 +63,10 @@
 // Put your function prototypes here
 /*- Variables --------------------------------------------------------------*/
 char bytes_received[64];
-int array_index = 0;
+uint8_t array_index = 0;
 int message_length = 0;
-volatile bool have_message = false;
 
 NWK_DataReq_t nwkDataReq;
-typedef void (*appDataConf_ptr_t)(NWK_DataReq_t *req);
 
 enum states {
 	AWAITING_DATA, RECEIVED_DATA, AWAITING_CONF
@@ -80,7 +78,7 @@ static uint8_t state = AWAITING_DATA;
 // Put your function implementations here
 void not_ready_to_receive()
 {
-	// set pin PB7 high when ready to receive data
+	// set pin PB7 high when NOT ready to receive data
 	PORTB &= ~_BV(PB7);
 }
 
@@ -92,29 +90,28 @@ void ready_to_receive()
 
 void HAL_UartBytesReceived(uint16_t bytes)
 {
-//	for (int i=0;i<bytes;i++)
-//			HAL_UartReadByte();
-	//HAL_UartWriteByte('H');
-	for (; array_index < bytes; array_index++)
-	{
-		//HAL_UartWriteByte('F');
-		bytes_received[array_index] = HAL_UartReadByte();
-
-		// get the length
-		if (array_index == 0)
+		if (!NWK_Busy())
 		{
-			message_length = bytes_received[array_index];
-		} else if (array_index == message_length) // the end
+			for (int i = 0; i < bytes; i++, array_index++)
+			{
+				bytes_received[array_index] = HAL_UartReadByte();
+				// get the length
+				if (array_index == 0)
+				{
+					message_length = bytes_received[array_index];
+				} else if (array_index == message_length) // the end
+				{
+					//raise rts high
+					not_ready_to_receive();
+					//and set a flag that we have a message
+					state = RECEIVED_DATA;
+				}
+			}
+		} else
 		{
-			//raise rts high
-			not_ready_to_receive();
-			//and set a flag that we have a message
-			state = RECEIVED_DATA;
+			for (int i = 0; i < bytes; i++)
+				HAL_UartReadByte();
 		}
-	}
-	//state = RECEIVED_DATA;
-	// after getting all bites set (not ready to send)
-	// Do nothing, but make the compiler happy
 }
 
 static void appDataConf(NWK_DataReq_t *req)
@@ -152,13 +149,7 @@ static void APP_TaskHandler(void)
 	switch (state)
 	{
 	case RECEIVED_DATA:
-		// send message out?
-//		bytes_received[0] = 'O';
-//		bytes_received[1] = 'K';
-//		bytes_received[2] = 'X';
-//		bytes_received[3] = '\n';
-//		HAL_UartWriteByte('X');
-		//array_index = 4;
+		// send message out
 		state = AWAITING_DATA;
 		send_message();
 		break;
@@ -185,9 +176,9 @@ void initNetwork()
 
 int main(void)
 {
-// set PB7 as output
+	// set PB7 as output
 	DDRB |= _BV(PB7);
-// set pin high - not clear to receive
+	// set pin high - not clear to receive
 	not_ready_to_receive();
 
 	SYS_Init();
@@ -195,9 +186,10 @@ int main(void)
 	HAL_LedInit();
 	HAL_LedOn(0);
 	initNetwork();
-// ready to recieve
+
+	// ready to recieve
 	ready_to_receive();
-	sei();
+
 	while (1)
 	{
 		SYS_TaskHandler();
