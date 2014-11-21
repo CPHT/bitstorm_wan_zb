@@ -54,6 +54,7 @@
 #include "nwk.h"
 #include "halUart.h"
 #include "halLed.h"
+#include "sysTimer.h"
 
 /*- Definitions ------------------------------------------------------------*/
 // Put your preprocessor definitions here
@@ -67,11 +68,16 @@ uint8_t array_index = 0;
 int message_length = 0;
 
 NWK_DataReq_t nwkDataReq;
+SYS_Timer_t timeoutTimer;
 
 enum states {
 	AWAITING_DATA, RECEIVED_DATA, AWAITING_CONF
 };
+enum commands {
+	SEND, ACK_SEND, SETUP_NETWORK
+};
 static uint8_t state = AWAITING_DATA;
+static uint8_t command;
 
 /*- Implementations --------------------------------------------------------*/
 
@@ -88,30 +94,82 @@ void ready_to_receive()
 	PORTB |= _BV(PB7);
 }
 
+void timeoutTimerHandler(SYS_Timer_t *timer)
+{
+	// handle timeout
+	HAL_UartWriteByte('T'); // Send back a timeout error.
+	array_index = 0;
+	ready_to_receive();
+	state = AWAITING_DATA;
+}
+
+void startTimeoutTimer()
+{
+	timeoutTimer.interval = 250;
+	timeoutTimer.mode = SYS_TIMER_INTERVAL_MODE;
+	timeoutTimer.handler = timeoutTimerHandler;
+	SYS_TimerStart(&timeoutTimer);
+}
+
 void HAL_UartBytesReceived(uint16_t bytes)
 {
-		if (!NWK_Busy())
+	if (!NWK_Busy())
+	{
+		for (int i = 0; i < bytes; i++, array_index++)
 		{
-			for (int i = 0; i < bytes; i++, array_index++)
+			bytes_received[array_index] = HAL_UartReadByte();
+			// get the length
+			if (array_index == 0)
 			{
-				bytes_received[array_index] = HAL_UartReadByte();
-				// get the length
-				if (array_index == 0)
+				message_length = bytes_received[array_index];
+
+				// if it takes longer than 1 sec to process the message, bail.
+				startTimeoutTimer();
+			} else if (array_index == 1)
+			{
+				int temp = bytes_received[array_index];
+				//HAL_UartWriteByte('0' + temp);
+				switch (temp)
 				{
-					message_length = bytes_received[array_index];
-				} else if (array_index == message_length) // the end
-				{
-					//raise rts high
-					not_ready_to_receive();
-					//and set a flag that we have a message
-					state = RECEIVED_DATA;
+				case 1:
+					command = SEND;
+					break;
+				case 2:
+					command = ACK_SEND;
+					break;
+				case 3:
+					command = SETUP_NETWORK;
+					break;
+				default:
+					{
+						// we got an unknown command
+						array_index = 0;
+						ready_to_receive();
+						state = AWAITING_DATA;
+					}
 				}
+			} else if (array_index == message_length) // the end
+			{
+				// Good message, stop timer
+				SYS_TimerStop(&timeoutTimer);
+
+				//raise rts high
+				not_ready_to_receive();
+				//and set a flag that we have a message
+				state = RECEIVED_DATA;
+			} else if (array_index > message_length)
+			{
+				HAL_UartWriteByte('E');
+				array_index = 0;
+				ready_to_receive();
+				state = AWAITING_DATA;
 			}
-		} else
-		{
-			for (int i = 0; i < bytes; i++)
-				HAL_UartReadByte();
 		}
+	} else
+	{
+		for (int i = 0; i < bytes; i++)
+			HAL_UartReadByte();
+	}
 }
 
 static void appDataConf(NWK_DataReq_t *req)
@@ -149,10 +207,16 @@ static void APP_TaskHandler(void)
 	switch (state)
 	{
 	case RECEIVED_DATA:
-		// send message out
-		state = AWAITING_DATA;
-		send_message();
-		break;
+		switch (command)
+		{
+		case SEND:
+			// send message out
+			//HAL_UartWriteByte('S');
+			state = AWAITING_DATA;
+			send_message();
+			break;
+		}
+
 	}
 
 }
