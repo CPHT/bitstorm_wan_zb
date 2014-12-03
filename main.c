@@ -46,6 +46,7 @@
 
 /*- Includes ---------------------------------------------------------------*/
 #include <stdbool.h>
+#include <avr/boot.h>
 
 #include "config.h"
 #include "hal.h"
@@ -66,15 +67,24 @@
 char bytes_received[64];
 uint8_t array_index = 0;
 int message_length = 0;
+uint64_t extAddr = 0;
+int cmd = 0;
 
 NWK_DataReq_t nwkDataReq;
 SYS_Timer_t timeoutTimer;
+
+typedef struct {
+	uint8_t command;
+	uint64_t address;
+} cmd_send_address_t;
+
+cmd_send_address_t cmd_send_address;
 
 enum states {
 	AWAITING_DATA, RECEIVED_DATA, AWAITING_CONF
 };
 enum commands {
-	SEND, ACK_SEND, SETUP_NETWORK
+	SEND, ACK_SEND, SETUP_NETWORK, GET_ADDRESS
 };
 static uint8_t state = AWAITING_DATA;
 static uint8_t command;
@@ -111,13 +121,61 @@ void startTimeoutTimer()
 	SYS_TimerStart(&timeoutTimer);
 }
 
+void get_device_address()
+{
+	uint8_t b;
+	b = boot_signature_byte_get(0x0102);
+	extAddr = b;
+	b = boot_signature_byte_get(0x0103);
+	extAddr |= ((uint64_t) b << 8);
+	b = boot_signature_byte_get(0x0104);
+	extAddr |= ((uint64_t) b << 16);
+	b = boot_signature_byte_get(0x0105);
+	extAddr |= ((uint64_t) b << 24);
+	b = boot_signature_byte_get(0x0106);
+	extAddr |= ((uint64_t) b << 32);
+	b = boot_signature_byte_get(0x0107);
+	extAddr |= ((uint64_t) b << 40);
+	b = boot_signature_byte_get(0x0108);
+	extAddr |= ((uint64_t) b << 48);
+	b = boot_signature_byte_get(0x0109);
+	extAddr |= ((uint64_t) b << 56);
+	cmd_send_address.address = extAddr;
+}
+
+void send_address()
+{
+	uint8_t frame[80];
+	frame[0] = sizeof(cmd_send_address) + 1;
+
+	int frame_index = 1;
+	// message
+	for (int i = 0; i < sizeof(cmd_send_address); i++)
+	{
+		frame[frame_index++] = ((uint8_t *) (&cmd_send_address))[i];
+	}
+
+	// send the bytes to the 1284
+	for (int i = 0; i < frame_index; i++)
+	{
+		HAL_UartWriteByte(frame[i]);
+	}
+
+	array_index = 0;
+	ready_to_receive();
+	state = AWAITING_DATA;
+}
+
 void HAL_UartBytesReceived(uint16_t bytes)
 {
 	if (!NWK_Busy())
 	{
 		for (int i = 0; i < bytes; i++, array_index++)
 		{
+			//HAL_UartWriteByte('X');
+			// get the bytes
 			bytes_received[array_index] = HAL_UartReadByte();
+
 			// get the length
 			if (array_index == 0)
 			{
@@ -127,9 +185,14 @@ void HAL_UartBytesReceived(uint16_t bytes)
 				startTimeoutTimer();
 			} else if (array_index == 1)
 			{
-				int temp = bytes_received[array_index];
-				//HAL_UartWriteByte('0' + temp);
-				switch (temp)
+				cmd = bytes_received[array_index];
+
+			} else if (array_index == message_length) // the end
+			{
+				// Good message, stop timer
+				SYS_TimerStop(&timeoutTimer);
+
+				switch (cmd)
 				{
 				case 1:
 					command = SEND;
@@ -140,6 +203,9 @@ void HAL_UartBytesReceived(uint16_t bytes)
 				case 3:
 					command = SETUP_NETWORK;
 					break;
+				case 4:
+					command = GET_ADDRESS;
+					break;
 				default:
 					{
 						// we got an unknown command
@@ -148,10 +214,6 @@ void HAL_UartBytesReceived(uint16_t bytes)
 						state = AWAITING_DATA;
 					}
 				}
-			} else if (array_index == message_length) // the end
-			{
-				// Good message, stop timer
-				SYS_TimerStop(&timeoutTimer);
 
 				//raise rts high
 				not_ready_to_receive();
@@ -203,6 +265,7 @@ void send_message()
  *****************************************************************************/
 static void APP_TaskHandler(void)
 {
+	uint8_t ck, ckx;
 	// Put your application code here
 	switch (state)
 	{
@@ -212,8 +275,22 @@ static void APP_TaskHandler(void)
 		case SEND:
 			// send message out
 			//HAL_UartWriteByte('S');
-			state = AWAITING_DATA;
+			//state = AWAITING_DATA;
+//			ck = bytes_received[11];
+//			ckx = 0;
+//			for (int i = 3; i <= 7; i++)
+//				ckx ^= bytes_received[i];
+//			if (ck != ckx)
+//			{
+//				// bad ck
+//				break;
+//			}
 			send_message();
+			break;
+		case GET_ADDRESS:
+			get_device_address();
+			cmd_send_address.command = 0x04;
+			send_address();
 			break;
 		}
 
