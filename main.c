@@ -56,6 +56,7 @@
 #include "halUart.h"
 #include "halLed.h"
 #include "sysTimer.h"
+#include "commands.h"
 
 /*- Definitions ------------------------------------------------------------*/
 // Put your preprocessor definitions here
@@ -66,6 +67,7 @@
 /*- Variables --------------------------------------------------------------*/
 char bytes_received[64];
 uint8_t array_index = 0;
+int frame_length = 0;
 int message_length = 0;
 uint64_t extAddr = 0;
 int cmd = 0;
@@ -76,15 +78,25 @@ SYS_Timer_t timeoutTimer;
 typedef struct {
 	uint8_t command;
 	uint64_t address;
+	uint8_t cs;
 } cmd_send_address_t;
 
+typedef struct {
+	uint8_t command;
+	uint8_t cs;
+} cmd_nwk_configured_t;
+
 cmd_send_address_t cmd_send_address;
+cmd_nwk_configured_t cmd_nwk_configured;
+cmd_config_nwk_t cmd_config_ntw;
+
+void initNetwork(cmd_config_nwk_t * nwk);
 
 enum states {
 	AWAITING_DATA, RECEIVED_DATA, AWAITING_CONF
 };
 enum commands {
-	SEND, ACK_SEND, SETUP_NETWORK, GET_ADDRESS
+	SEND, ACK_SEND, CONFIG_NWK, GET_ADDRESS
 };
 static uint8_t state = AWAITING_DATA;
 static uint8_t command;
@@ -140,13 +152,14 @@ void get_device_address()
 	extAddr |= ((uint64_t) b << 48);
 	b = boot_signature_byte_get(0x0109);
 	extAddr |= ((uint64_t) b << 56);
+
 	cmd_send_address.address = extAddr;
 }
 
 void send_address()
 {
 	uint8_t frame[80];
-	frame[0] = sizeof(cmd_send_address) + 1;
+	frame[0] = sizeof(cmd_send_address);
 
 	int frame_index = 1;
 	// message
@@ -179,7 +192,7 @@ void HAL_UartBytesReceived(uint16_t bytes)
 			// get the length
 			if (array_index == 0)
 			{
-				message_length = bytes_received[array_index];
+				frame_length = bytes_received[array_index];
 
 				// if it takes longer than 1 sec to process the message, bail.
 				startTimeoutTimer();
@@ -187,7 +200,7 @@ void HAL_UartBytesReceived(uint16_t bytes)
 			{
 				cmd = bytes_received[array_index];
 
-			} else if (array_index == message_length) // the end
+			} else if (array_index == frame_length) // the end
 			{
 				// Good message, stop timer
 				SYS_TimerStop(&timeoutTimer);
@@ -201,7 +214,7 @@ void HAL_UartBytesReceived(uint16_t bytes)
 					command = ACK_SEND;
 					break;
 				case 3:
-					command = SETUP_NETWORK;
+					command = CONFIG_NWK;
 					break;
 				case 4:
 					command = GET_ADDRESS;
@@ -219,7 +232,7 @@ void HAL_UartBytesReceived(uint16_t bytes)
 				not_ready_to_receive();
 				//and set a flag that we have a message
 				state = RECEIVED_DATA;
-			} else if (array_index > message_length)
+			} else if (array_index > frame_length)
 			{
 				HAL_UartWriteByte('E');
 				array_index = 0;
@@ -240,21 +253,20 @@ static void appDataConf(NWK_DataReq_t *req)
 	array_index = 0;
 	// set ready_to_receive after message is handled?
 	ready_to_receive();
-	HAL_UartWriteByte('O');
-	HAL_UartWriteByte('K');
-	HAL_UartWriteByte('\n');
 	state = AWAITING_DATA;
 }
 
 void send_message()
 {
+	cmd_send_header_t * cmd;
+	cmd = (cmd_send_header_t*) &bytes_received[1];
 	nwkDataReq.dstAddr = 0;
 	nwkDataReq.dstEndpoint = 0x0001;
 	nwkDataReq.srcEndpoint = 0x0001;
 	//nwkDataReq.options = NWK_OPT_ACK_REQUEST | NWK_OPT_ENABLE_SECURITY;
 	//nwkDataReq.options = NWK_OPT_ENABLE_SECURITY;
-	nwkDataReq.size = array_index;
-	nwkDataReq.data = (uint8_t *) bytes_received;
+	nwkDataReq.size = cmd->message_length;
+	nwkDataReq.data = &(cmd->dummy_data);
 	nwkDataReq.confirm = appDataConf;
 
 	NWK_DataReq(&nwkDataReq);
@@ -263,6 +275,45 @@ void send_message()
 
 /*************************************************************************//**
  *****************************************************************************/
+
+void initNetwork(cmd_config_nwk_t * nwk)
+{
+	HAL_UartWriteByte(0x01);
+	HAL_UartWriteByte(0x01);
+	HAL_UartWriteByte(0x01);
+	HAL_UartWriteByte(0x01);
+	for (int i = 0; i < sizeof(cmd_config_nwk_t); i++)
+	{
+		HAL_UartWriteByte(((char *)nwk)[i]);
+	}
+	NWK_SetAddr(nwk->short_id);
+	NWK_SetPanId(nwk->pan_id);
+	PHY_SetChannel(nwk->channel);
+	PHY_SetTxPower(0);
+	PHY_SetRxState(true);
+
+	// respond back
+	uint8_t frame[80];
+	frame[0] = sizeof(cmd_nwk_configured);
+
+	int frame_index = 1;
+	// message
+	for (int i = 0; i < sizeof(cmd_nwk_configured); i++)
+	{
+		frame[frame_index++] = ((uint8_t *) (&cmd_nwk_configured))[i];
+	}
+
+	// send the bytes to the 1284
+	for (int i = 0; i < frame_index; i++)
+	{
+		HAL_UartWriteByte(frame[i]);
+	}
+
+	array_index = 0;
+	ready_to_receive();
+	state = AWAITING_DATA;
+}
+
 static void APP_TaskHandler(void)
 {
 	uint8_t ck, ckx;
@@ -274,23 +325,18 @@ static void APP_TaskHandler(void)
 		{
 		case SEND:
 			// send message out
-			//HAL_UartWriteByte('S');
-			//state = AWAITING_DATA;
-//			ck = bytes_received[11];
-//			ckx = 0;
-//			for (int i = 3; i <= 7; i++)
-//				ckx ^= bytes_received[i];
-//			if (ck != ckx)
-//			{
-//				// bad ck
-//				break;
-//			}
 			send_message();
 			break;
 		case GET_ADDRESS:
 			get_device_address();
 			cmd_send_address.command = 0x04;
+			cmd_send_address.cs = 0xFF;
 			send_address();
+			break;
+		case CONFIG_NWK:
+			cmd_nwk_configured.command = 0x03;
+			cmd_nwk_configured.cs = 0xFF;
+			initNetwork((cmd_config_nwk_t*) &bytes_received[1]);
 			break;
 		}
 
@@ -305,15 +351,14 @@ static void APP_TaskHandler(void)
 
 	return true;
 }
-
-void initNetwork()
-{
-	NWK_SetAddr(0x0001);
-	NWK_SetPanId(0x1973);
-	PHY_SetChannel(0x16);
-	PHY_SetTxPower(0);
-	PHY_SetRxState(true);
-}
+ void initNetwork2()
+ {
+ 	NWK_SetAddr(0x0000);
+ 	NWK_SetPanId(0x1973);
+ 	PHY_SetChannel(0x16);
+ 	PHY_SetTxPower(0);
+ 	PHY_SetRxState(true);
+ }
 
 int main(void)
 {
@@ -326,7 +371,7 @@ int main(void)
 	HAL_UartInit(38400);
 	HAL_LedInit();
 	HAL_LedOn(0);
-	initNetwork();
+	//initNetwork2();
 
 	// ready to recieve
 	ready_to_receive();

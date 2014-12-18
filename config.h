@@ -50,5 +50,6 @@
 /*- Definitions ------------------------------------------------------------*/
 // Put your configuration option here
 #define HAL_UART_CHANNEL 1
-
+#define HAL_UART_TX_FIFO_SIZE  80
+#define HAL_UART_RX_FIFO_SIZE  80
 #endif // _CONFIG_H_
