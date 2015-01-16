@@ -63,14 +63,18 @@
 /*- Types ------------------------------------------------------------------*/
 // Put your type definitions here
 /*- Prototypes -------------------------------------------------------------*/
+void send_msg_status();
+void send_message();
 // Put your function prototypes here
 /*- Variables --------------------------------------------------------------*/
+
 char bytes_received[64];
 uint8_t array_index = 0;
 int frame_length = 0;
 int message_length = 0;
 uint64_t extAddr = 0;
 int cmd = 0;
+int ack_retry_count = 0;
 
 NWK_DataReq_t nwkDataReq;
 SYS_Timer_t timeoutTimer;
@@ -86,14 +90,20 @@ typedef struct {
 	uint8_t cs;
 } cmd_nwk_configured_t;
 
+typedef struct {
+	uint8_t command;
+	uint8_t cs;
+} msg_status_resp_t;
+
 cmd_send_address_t cmd_send_address;
 cmd_nwk_configured_t cmd_nwk_configured;
 cmd_config_nwk_t cmd_config_ntw;
+msg_status_resp_t msg_status_resp;
 
 void initNetwork(cmd_config_nwk_t * nwk);
 
 enum states {
-	AWAITING_DATA, RECEIVED_DATA, AWAITING_CONF
+	AWAITING_DATA, RECEIVED_DATA, AWAITING_CONF, RESEND_MSG
 };
 enum commands {
 	SEND, ACK_SEND, CONFIG_NWK, GET_ADDRESS
@@ -106,13 +116,13 @@ static uint8_t command;
 // Put your function implementations here
 void not_ready_to_receive()
 {
-	// set pin PB7 high when NOT ready to receive data
+	// set pin PB7 LOW when NOT ready to receive data
 	PORTB &= ~_BV(PB7);
 }
 
 void ready_to_receive()
 {
-	// set pin PB7 low when ready to receive data
+	// set pin PB7 HIGH when ready to receive data
 	PORTB |= _BV(PB7);
 }
 
@@ -194,7 +204,7 @@ void HAL_UartBytesReceived(uint16_t bytes)
 			{
 				frame_length = bytes_received[array_index];
 
-				// if it takes longer than 1 sec to process the message, bail.
+				// if it takes longer than .25 sec to process the message, bail.
 				startTimeoutTimer();
 			} else if (array_index == 1)
 			{
@@ -228,7 +238,7 @@ void HAL_UartBytesReceived(uint16_t bytes)
 					}
 				}
 
-				//raise rts high
+				//raise rts low
 				not_ready_to_receive();
 				//and set a flag that we have a message
 				state = RECEIVED_DATA;
@@ -236,7 +246,6 @@ void HAL_UartBytesReceived(uint16_t bytes)
 			{
 				HAL_UartWriteByte('E');
 				array_index = 0;
-				ready_to_receive();
 				state = AWAITING_DATA;
 			}
 		}
@@ -249,11 +258,51 @@ void HAL_UartBytesReceived(uint16_t bytes)
 
 static void appDataConf(NWK_DataReq_t *req)
 {
-	// empty bytes_received and set array_index to 0
-	array_index = 0;
-	// set ready_to_receive after message is handled?
-	ready_to_receive();
-	state = AWAITING_DATA;
+	if (NWK_SUCCESS_STATUS == req->status)
+	{
+		array_index = 0;
+		state = AWAITING_DATA;
+		HAL_LedOff(0);
+	} else
+	{
+		if (ack_retry_count <= 3)
+		{
+			// retry to send the message 3 times
+			//nwkDataReq.options = NWK_OPT_ACK_REQUEST | NWK_OPT_ENABLE_SECURITY;
+			state = RESEND_MSG;
+			ack_retry_count++;
+		} else
+		{
+			// send message to 1284 that message was not received
+			send_msg_status();
+			array_index = 0;
+			state = AWAITING_DATA;
+			ack_retry_count = 0;
+			HAL_LedOff(0);
+		}
+	}
+}
+
+void send_msg_status()
+{
+	msg_status_resp.command = 0x07;
+	msg_status_resp.cs = 0xFF;
+	// respond back
+	uint8_t frame[80];
+	frame[0] = sizeof(msg_status_resp);
+
+	int frame_index = 1;
+	// message
+	for (int i = 0; i < sizeof(msg_status_resp); i++)
+	{
+		frame[frame_index++] = ((uint8_t *) (&msg_status_resp))[i];
+	}
+
+	// send the bytes to the 1284
+	for (int i = 0; i < frame_index; i++)
+	{
+		HAL_UartWriteByte(frame[i]);
+	}
 }
 
 void send_message()
@@ -263,6 +312,7 @@ void send_message()
 	nwkDataReq.dstAddr = 0;
 	nwkDataReq.dstEndpoint = 0x0001;
 	nwkDataReq.srcEndpoint = 0x0001;
+	//if(command == ACK_SEND)
 	//nwkDataReq.options = NWK_OPT_ACK_REQUEST | NWK_OPT_ENABLE_SECURITY;
 	//nwkDataReq.options = NWK_OPT_ENABLE_SECURITY;
 	nwkDataReq.size = cmd->message_length;
@@ -271,6 +321,7 @@ void send_message()
 
 	NWK_DataReq(&nwkDataReq);
 	state = AWAITING_CONF;
+	HAL_LedOn(0);
 }
 
 /*************************************************************************//**
@@ -278,14 +329,7 @@ void send_message()
 
 void initNetwork(cmd_config_nwk_t * nwk)
 {
-	HAL_UartWriteByte(0x01);
-	HAL_UartWriteByte(0x01);
-	HAL_UartWriteByte(0x01);
-	HAL_UartWriteByte(0x01);
-	for (int i = 0; i < sizeof(cmd_config_nwk_t); i++)
-	{
-		HAL_UartWriteByte(((char *)nwk)[i]);
-	}
+
 	NWK_SetAddr(nwk->short_id);
 	NWK_SetPanId(nwk->pan_id);
 	PHY_SetChannel(nwk->channel);
@@ -310,21 +354,32 @@ void initNetwork(cmd_config_nwk_t * nwk)
 	}
 
 	array_index = 0;
-	ready_to_receive();
 	state = AWAITING_DATA;
 }
 
 static void APP_TaskHandler(void)
 {
-	uint8_t ck, ckx;
+
 	// Put your application code here
 	switch (state)
 	{
+	case AWAITING_DATA:
+		if (!NWK_Busy())
+			ready_to_receive();
+		break;
+	case RESEND_MSG:
+		if (!NWK_Busy())
+			send_message();
+		break;
 	case RECEIVED_DATA:
 		switch (command)
 		{
 		case SEND:
 			// send message out
+			send_message();
+			break;
+		case ACK_SEND:
+			nwkDataReq.options = NWK_OPT_ACK_REQUEST | NWK_OPT_ENABLE_SECURITY;
 			send_message();
 			break;
 		case GET_ADDRESS:
@@ -351,26 +406,26 @@ static void APP_TaskHandler(void)
 
 	return true;
 }
- void initNetwork2()
- {
- 	NWK_SetAddr(0x0000);
- 	NWK_SetPanId(0x1973);
- 	PHY_SetChannel(0x16);
- 	PHY_SetTxPower(0);
- 	PHY_SetRxState(true);
- }
+void initNetwork2()
+{
+	NWK_SetAddr(0x0000);
+	NWK_SetPanId(0x1973);
+	PHY_SetChannel(0x16);
+	PHY_SetTxPower(0);
+	PHY_SetRxState(true);
+}
 
 int main(void)
 {
 	// set PB7 as output
 	DDRB |= _BV(PB7);
-	// set pin high - not clear to receive
+	// set pin low - not clear to receive
 	not_ready_to_receive();
 
 	SYS_Init();
 	HAL_UartInit(38400);
 	HAL_LedInit();
-	HAL_LedOn(0);
+	HAL_LedOff(0);
 	//initNetwork2();
 
 	// ready to recieve
