@@ -113,21 +113,57 @@ static uint8_t command;
 
 /*- Implementations --------------------------------------------------------*/
 
+
+//DEBUG DEBUG DEBUG DEBUG
+//DEBUG DEBUG DEBUG DEBUG
+//DEBUG DEBUG DEBUG DEBUG
+//DEBUG DEBUG DEBUG DEBUG
+//DEBUG DEBUG DEBUG DEBUG
+
+void not_ready_to_receive();
+SYS_Timer_t debugTimer;
+char debugString[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789CPHT";
+void debugTimerHandler(SYS_Timer_t *timer) {
+	bytes_received[0] = 1 + 4 + sizeof(debugString);
+	bytes_received[1] = 1;
+	bytes_received[2] = 0x00;
+	bytes_received[3] = 0x00;
+	bytes_received[4] = 0x00;
+	bytes_received[5] = sizeof(debugString);
+	for (int i=0, j = 6; debugString[i]; bytes_received[j++] = debugString[i++])
+		;
+	not_ready_to_receive();
+	state = RECEIVED_DATA;
+}
+void debugInit() {
+	debugTimer.interval = 10;
+	debugTimer.mode = SYS_TIMER_INTERVAL_MODE;
+	debugTimer.handler = debugTimerHandler;
+	SYS_TimerStart(&debugTimer);
+}
+
+//DEBUG DEBUG DEBUG DEBUG
+//DEBUG DEBUG DEBUG DEBUG
+//DEBUG DEBUG DEBUG DEBUG
+//DEBUG DEBUG DEBUG DEBUG
+//DEBUG DEBUG DEBUG DEBUG
+
+
+
+
+
 // Put your function implementations here
-void not_ready_to_receive()
-{
+void not_ready_to_receive() {
 	// set pin PB7 LOW when NOT ready to receive data
 	PORTB &= ~_BV(PB7);
 }
 
-void ready_to_receive()
-{
+void ready_to_receive() {
 	// set pin PB7 HIGH when ready to receive data
 	PORTB |= _BV(PB7);
 }
 
-void timeoutTimerHandler(SYS_Timer_t *timer)
-{
+void timeoutTimerHandler(SYS_Timer_t *timer) {
 	// handle timeout
 	HAL_UartWriteByte('T'); // Send back a timeout error.
 	array_index = 0;
@@ -135,16 +171,14 @@ void timeoutTimerHandler(SYS_Timer_t *timer)
 	state = AWAITING_DATA;
 }
 
-void startTimeoutTimer()
-{
+void startTimeoutTimer() {
 	timeoutTimer.interval = 250;
 	timeoutTimer.mode = SYS_TIMER_INTERVAL_MODE;
 	timeoutTimer.handler = timeoutTimerHandler;
 	SYS_TimerStart(&timeoutTimer);
 }
 
-void get_device_address()
-{
+void get_device_address() {
 	uint8_t b;
 	b = boot_signature_byte_get(0x0102);
 	extAddr = b;
@@ -166,21 +200,18 @@ void get_device_address()
 	cmd_send_address.address = extAddr;
 }
 
-void send_address()
-{
+void send_address() {
 	uint8_t frame[80];
 	frame[0] = sizeof(cmd_send_address);
 
 	int frame_index = 1;
 	// message
-	for (int i = 0; i < sizeof(cmd_send_address); i++)
-	{
+	for (int i = 0; i < sizeof(cmd_send_address); i++) {
 		frame[frame_index++] = ((uint8_t *) (&cmd_send_address))[i];
 	}
 
 	// send the bytes to the 1284
-	for (int i = 0; i < frame_index; i++)
-	{
+	for (int i = 0; i < frame_index; i++) {
 		HAL_UartWriteByte(frame[i]);
 	}
 
@@ -189,34 +220,27 @@ void send_address()
 	state = AWAITING_DATA;
 }
 
-void HAL_UartBytesReceived(uint16_t bytes)
-{
-	if (!NWK_Busy())
-	{
-		for (int i = 0; i < bytes; i++, array_index++)
-		{
+void HAL_UartBytesReceived(uint16_t bytes) {
+	if (!NWK_Busy()) {
+		for (int i = 0; i < bytes; i++, array_index++) {
 			//HAL_UartWriteByte('X');
 			// get the bytes
 			bytes_received[array_index] = HAL_UartReadByte();
 
 			// get the length
-			if (array_index == 0)
-			{
+			if (array_index == 0) {
 				frame_length = bytes_received[array_index];
 
 				// if it takes longer than .25 sec to process the message, bail.
 				startTimeoutTimer();
-			} else if (array_index == 1)
-			{
+			} else if (array_index == 1) {
 				cmd = bytes_received[array_index];
 
-			} else if (array_index == frame_length) // the end
-			{
+			} else if (array_index == frame_length) {
 				// Good message, stop timer
 				SYS_TimerStop(&timeoutTimer);
 
-				switch (cmd)
-				{
+				switch (cmd) {
 				case 1:
 					command = SEND;
 					break;
@@ -229,62 +253,59 @@ void HAL_UartBytesReceived(uint16_t bytes)
 				case 4:
 					command = GET_ADDRESS;
 					break;
-				default:
-					{
-						// we got an unknown command
-						array_index = 0;
-						ready_to_receive();
-						state = AWAITING_DATA;
-					}
+				default: {
+					// we got an unknown command
+					//REVIEW: Should the receive buffer be flushed here?
+					array_index = 0;
+					ready_to_receive();
+					state = AWAITING_DATA;
+				}
 				}
 
+				//REVIEW: What happens if an unkown command falls through? State gets reset like it's RECEIVED_DATA
 				//raise rts low
 				not_ready_to_receive();
 				//and set a flag that we have a message
 				state = RECEIVED_DATA;
-			} else if (array_index > frame_length)
-			{
+			} else if (array_index > frame_length) {
+				//REVIEW: Should the receive buffer be flushed here?
 				HAL_UartWriteByte('E');
 				array_index = 0;
 				state = AWAITING_DATA;
 			}
 		}
-	} else
-	{
+	} else {
+		//REVIEW: Refactor to flushUartRx() so it can be called multiple places
 		for (int i = 0; i < bytes; i++)
 			HAL_UartReadByte();
 	}
 }
 
-static void appDataConf(NWK_DataReq_t *req)
-{
-	if (NWK_SUCCESS_STATUS == req->status)
-	{
+static void appDataConf(NWK_DataReq_t *req) {
+	if (NWK_SUCCESS_STATUS == req->status) {
 		array_index = 0;
 		state = AWAITING_DATA;
 		HAL_LedOff(0);
-	} else
-	{
-		if (ack_retry_count <= 3)
-		{
+		SYS_TimerStart(&debugTimer);	//DEBUG DEBUG DEBUG
+	} else {
+		if (ack_retry_count <= 3) {
 			// retry to send the message 3 times
 			//nwkDataReq.options = NWK_OPT_ACK_REQUEST | NWK_OPT_ENABLE_SECURITY;
 			state = RESEND_MSG;
 			ack_retry_count++;
-		} else
-		{
+		} else {
 			// send message to 1284 that message was not received
 			send_msg_status();
 			array_index = 0;
 			state = AWAITING_DATA;
 			ack_retry_count = 0;
 			HAL_LedOff(0);
+			SYS_TimerStart(&debugTimer);	//DEBUG DEBUG DEBUG
 		}
 	}
 }
 
-void send_msg_status()
-{
+void send_msg_status() {
 	msg_status_resp.command = 0x07;
 	msg_status_resp.cs = 0xFF;
 	// respond back
@@ -293,20 +314,17 @@ void send_msg_status()
 
 	int frame_index = 1;
 	// message
-	for (int i = 0; i < sizeof(msg_status_resp); i++)
-	{
+	for (int i = 0; i < sizeof(msg_status_resp); i++) {
 		frame[frame_index++] = ((uint8_t *) (&msg_status_resp))[i];
 	}
 
 	// send the bytes to the 1284
-	for (int i = 0; i < frame_index; i++)
-	{
+	for (int i = 0; i < frame_index; i++) {
 		HAL_UartWriteByte(frame[i]);
 	}
 }
 
-void send_message()
-{
+void send_message() {
 	cmd_send_header_t * cmd;
 	cmd = (cmd_send_header_t*) &bytes_received[1];
 	nwkDataReq.dstAddr = 0;
@@ -327,8 +345,7 @@ void send_message()
 /*************************************************************************//**
  *****************************************************************************/
 
-void initNetwork(cmd_config_nwk_t * nwk)
-{
+void initNetwork(cmd_config_nwk_t * nwk) {
 
 	NWK_SetAddr(nwk->short_id);
 	NWK_SetPanId(nwk->pan_id);
@@ -342,14 +359,12 @@ void initNetwork(cmd_config_nwk_t * nwk)
 
 	int frame_index = 1;
 	// message
-	for (int i = 0; i < sizeof(cmd_nwk_configured); i++)
-	{
+	for (int i = 0; i < sizeof(cmd_nwk_configured); i++) {
 		frame[frame_index++] = ((uint8_t *) (&cmd_nwk_configured))[i];
 	}
 
 	// send the bytes to the 1284
-	for (int i = 0; i < frame_index; i++)
-	{
+	for (int i = 0; i < frame_index; i++) {
 		HAL_UartWriteByte(frame[i]);
 	}
 
@@ -357,12 +372,10 @@ void initNetwork(cmd_config_nwk_t * nwk)
 	state = AWAITING_DATA;
 }
 
-static void APP_TaskHandler(void)
-{
+static void APP_TaskHandler(void) {
 
 	// Put your application code here
-	switch (state)
-	{
+	switch (state) {
 	case AWAITING_DATA:
 		if (!NWK_Busy())
 			ready_to_receive();
@@ -372,8 +385,7 @@ static void APP_TaskHandler(void)
 			send_message();
 		break;
 	case RECEIVED_DATA:
-		switch (command)
-		{
+		switch (command) {
 		case SEND:
 			// send message out
 			send_message();
@@ -399,24 +411,27 @@ static void APP_TaskHandler(void)
 
 }
 
+
+
 /*************************************************************************//**
  *****************************************************************************/bool network_ind(
-		NWK_DataInd_t *ind)
-{
+		NWK_DataInd_t *ind) {
 
 	return true;
 }
-void initNetwork2()
-{
-	NWK_SetAddr(0x0000);
+void initNetwork2() {
+	uint8_t b;
+	uint16_t short_addr;
+	b = boot_signature_byte_get(0x0102); short_addr = b;
+	b = boot_signature_byte_get(0x0103); short_addr |= ((uint16_t)b << 8);
+	NWK_SetAddr(short_addr);
 	NWK_SetPanId(0x1973);
 	PHY_SetChannel(0x16);
 	PHY_SetTxPower(0);
 	PHY_SetRxState(true);
 }
 
-int main(void)
-{
+int main(void) {
 	// set PB7 as output
 	DDRB |= _BV(PB7);
 	// set pin low - not clear to receive
@@ -426,13 +441,14 @@ int main(void)
 	HAL_UartInit(38400);
 	HAL_LedInit();
 	HAL_LedOff(0);
-	//initNetwork2();
+	initNetwork2();
 
 	// ready to recieve
 	ready_to_receive();
 
-	while (1)
-	{
+	debugInit();	// DEBUG DEBUG DEBUG
+
+	while (1) {
 		SYS_TaskHandler();
 		HAL_UartTaskHandler();
 		APP_TaskHandler();
