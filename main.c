@@ -113,44 +113,38 @@ static uint8_t command;
 
 /*- Implementations --------------------------------------------------------*/
 
-
 //DEBUG DEBUG DEBUG DEBUG
 //DEBUG DEBUG DEBUG DEBUG
 //DEBUG DEBUG DEBUG DEBUG
 //DEBUG DEBUG DEBUG DEBUG
 //DEBUG DEBUG DEBUG DEBUG
-
-void not_ready_to_receive();
-SYS_Timer_t debugTimer;
-char debugString[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789CPHT";
-void debugTimerHandler(SYS_Timer_t *timer) {
-	bytes_received[0] = 1 + 4 + sizeof(debugString);
-	bytes_received[1] = 1;
-	bytes_received[2] = 0x00;
-	bytes_received[3] = 0x00;
-	bytes_received[4] = 0x00;
-	bytes_received[5] = sizeof(debugString);
-	for (int i=0, j = 6; debugString[i]; bytes_received[j++] = debugString[i++])
-		;
-	not_ready_to_receive();
-	state = RECEIVED_DATA;
-}
-void debugInit() {
-	debugTimer.interval = 10;
-	debugTimer.mode = SYS_TIMER_INTERVAL_MODE;
-	debugTimer.handler = debugTimerHandler;
-	SYS_TimerStart(&debugTimer);
-}
-
+//void not_ready_to_receive();
+//SYS_Timer_t debugTimer;
+//char debugString[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789CPHT";
+//void debugTimerHandler(SYS_Timer_t *timer) {
+//	bytes_received[0] = 1 + 4 + sizeof(debugString);
+//	bytes_received[1] = 1;
+//	bytes_received[2] = 0x00;
+//	bytes_received[3] = 0x00;
+//	bytes_received[4] = 0x00;
+//	bytes_received[5] = sizeof(debugString);
+//	for (int i = 0, j = 6; debugString[i]; bytes_received[j++] =
+//			debugString[i++])
+//		;
+//	not_ready_to_receive();
+//	state = RECEIVED_DATA;
+//}
+//void debugInit() {
+//	debugTimer.interval = 10;
+//	debugTimer.mode = SYS_TIMER_INTERVAL_MODE;
+//	debugTimer.handler = debugTimerHandler;
+//	SYS_TimerStart(&debugTimer);
+//}
 //DEBUG DEBUG DEBUG DEBUG
 //DEBUG DEBUG DEBUG DEBUG
 //DEBUG DEBUG DEBUG DEBUG
 //DEBUG DEBUG DEBUG DEBUG
 //DEBUG DEBUG DEBUG DEBUG
-
-
-
-
 
 // Put your function implementations here
 void not_ready_to_receive() {
@@ -220,10 +214,15 @@ void send_address() {
 	state = AWAITING_DATA;
 }
 
+void flushUartRx(void) {
+	while (HAL_UartGetRxFifoBytes() > 0)
+		HAL_UartReadByte();
+}
+
 void HAL_UartBytesReceived(uint16_t bytes) {
+	bool validMessage;
 	if (!NWK_Busy()) {
 		for (int i = 0; i < bytes; i++, array_index++) {
-			//HAL_UartWriteByte('X');
 			// get the bytes
 			bytes_received[array_index] = HAL_UartReadByte();
 
@@ -240,6 +239,8 @@ void HAL_UartBytesReceived(uint16_t bytes) {
 				// Good message, stop timer
 				SYS_TimerStop(&timeoutTimer);
 
+				validMessage = true;
+
 				switch (cmd) {
 				case 1:
 					command = SEND;
@@ -254,30 +255,30 @@ void HAL_UartBytesReceived(uint16_t bytes) {
 					command = GET_ADDRESS;
 					break;
 				default: {
-					// we got an unknown command
-					//REVIEW: Should the receive buffer be flushed here?
+					// invalid command, let the client know and reset
+					HAL_UartWriteByte('E');
 					array_index = 0;
-					ready_to_receive();
+					flushUartRx();
 					state = AWAITING_DATA;
+					validMessage = false;
 				}
 				}
 
-				//REVIEW: What happens if an unkown command falls through? State gets reset like it's RECEIVED_DATA
-				//raise rts low
-				not_ready_to_receive();
-				//and set a flag that we have a message
-				state = RECEIVED_DATA;
+				// If we have a valid message, signal busy status and advance state machine
+				if (validMessage == true) {
+					not_ready_to_receive();
+					state = RECEIVED_DATA;
+				}
+
 			} else if (array_index > frame_length) {
-				//REVIEW: Should the receive buffer be flushed here?
 				HAL_UartWriteByte('E');
 				array_index = 0;
+				flushUartRx();
 				state = AWAITING_DATA;
 			}
 		}
 	} else {
-		//REVIEW: Refactor to flushUartRx() so it can be called multiple places
-		for (int i = 0; i < bytes; i++)
-			HAL_UartReadByte();
+		flushUartRx();
 	}
 }
 
@@ -286,7 +287,7 @@ static void appDataConf(NWK_DataReq_t *req) {
 		array_index = 0;
 		state = AWAITING_DATA;
 		HAL_LedOff(0);
-		SYS_TimerStart(&debugTimer);	//DEBUG DEBUG DEBUG
+		//SYS_TimerStart(&debugTimer);	//DEBUG DEBUG DEBUG
 	} else {
 		if (ack_retry_count <= 3) {
 			// retry to send the message 3 times
@@ -300,7 +301,7 @@ static void appDataConf(NWK_DataReq_t *req) {
 			state = AWAITING_DATA;
 			ack_retry_count = 0;
 			HAL_LedOff(0);
-			SYS_TimerStart(&debugTimer);	//DEBUG DEBUG DEBUG
+			//SYS_TimerStart(&debugTimer);	//DEBUG DEBUG DEBUG
 		}
 	}
 }
@@ -385,33 +386,33 @@ static void APP_TaskHandler(void) {
 			send_message();
 		break;
 	case RECEIVED_DATA:
-		switch (command) {
-		case SEND:
-			// send message out
-			send_message();
-			break;
-		case ACK_SEND:
-			nwkDataReq.options = NWK_OPT_ACK_REQUEST | NWK_OPT_ENABLE_SECURITY;
-			send_message();
-			break;
-		case GET_ADDRESS:
-			get_device_address();
-			cmd_send_address.command = 0x04;
-			cmd_send_address.cs = 0xFF;
-			send_address();
-			break;
-		case CONFIG_NWK:
-			cmd_nwk_configured.command = 0x03;
-			cmd_nwk_configured.cs = 0xFF;
-			initNetwork((cmd_config_nwk_t*) &bytes_received[1]);
-			break;
+		if (!NWK_Busy()) {
+			switch (command) {
+			case SEND:
+				// send message out
+				send_message();
+				break;
+			case ACK_SEND:
+				nwkDataReq.options = NWK_OPT_ACK_REQUEST
+						| NWK_OPT_ENABLE_SECURITY;
+				send_message();
+				break;
+			case GET_ADDRESS:
+				get_device_address();
+				cmd_send_address.command = 0x04;
+				cmd_send_address.cs = 0xFF;
+				send_address();
+				break;
+			case CONFIG_NWK:
+				cmd_nwk_configured.command = 0x03;
+				cmd_nwk_configured.cs = 0xFF;
+				initNetwork((cmd_config_nwk_t*) &bytes_received[1]);
+				break;
+			}
 		}
-
 	}
 
 }
-
-
 
 /*************************************************************************//**
  *****************************************************************************/bool network_ind(
@@ -422,8 +423,10 @@ static void APP_TaskHandler(void) {
 void initNetwork2() {
 	uint8_t b;
 	uint16_t short_addr;
-	b = boot_signature_byte_get(0x0102); short_addr = b;
-	b = boot_signature_byte_get(0x0103); short_addr |= ((uint16_t)b << 8);
+	b = boot_signature_byte_get(0x0102);
+	short_addr = b;
+	b = boot_signature_byte_get(0x0103);
+	short_addr |= ((uint16_t) b << 8);
 	NWK_SetAddr(short_addr);
 	NWK_SetPanId(0x1973);
 	PHY_SetChannel(0x16);
@@ -441,12 +444,12 @@ int main(void) {
 	HAL_UartInit(38400);
 	HAL_LedInit();
 	HAL_LedOff(0);
-	initNetwork2();
+	//initNetwork2();
 
 	// ready to recieve
 	ready_to_receive();
 
-	debugInit();	// DEBUG DEBUG DEBUG
+	//debugInit();	// DEBUG DEBUG DEBUG
 
 	while (1) {
 		SYS_TaskHandler();

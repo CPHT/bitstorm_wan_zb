@@ -58,4 +58,9 @@ uint8_t HAL_UartReadByte(void);
 void HAL_UartBytesReceived(uint16_t bytes);
 void HAL_UartTaskHandler(void);
 
+//CPHT: Added HAL_UartGetTxFifoBytes to facilitate flushing
+uint16_t HAL_UartGetTxFifoBytes(void);
+//CPHT: Added HAL_UartGetRxFifoBytes to facilitate flushing
+uint16_t HAL_UartGetRxFifoBytes(void);
+
 #endif // _HAL_UART_H_
