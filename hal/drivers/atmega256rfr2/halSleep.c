@@ -133,7 +133,7 @@ void HAL_Sleep(uint32_t interval)
     }
     else
     {
-      // TODO: wakeup from some other source
+      // wakeup from some other source
     }
   }
 }

@@ -106,10 +106,10 @@ enum states {
 	AWAITING_DATA, RECEIVED_DATA, AWAITING_CONF, RESEND_MSG
 };
 enum commands {
-	SEND, ACK_SEND, CONFIG_NWK, GET_ADDRESS
+	SEND=1, ACK_SEND, CONFIG_NWK, GET_ADDRESS
 };
 static uint8_t state = AWAITING_DATA;
-static uint8_t command;
+//static uint8_t command;
 
 /*- Implementations --------------------------------------------------------*/
 
@@ -145,7 +145,6 @@ static uint8_t command;
 //DEBUG DEBUG DEBUG DEBUG
 //DEBUG DEBUG DEBUG DEBUG
 //DEBUG DEBUG DEBUG DEBUG
-
 // Put your function implementations here
 void not_ready_to_receive() {
 	// set pin PB7 LOW when NOT ready to receive data
@@ -219,8 +218,31 @@ void flushUartRx(void) {
 		HAL_UartReadByte();
 }
 
+bool isValidMessage(void) {
+	uint8_t cs = 0;
+	uint8_t cs_in = 0;
+
+	for (int i = 0; i < frame_length; cs ^= bytes_received[i++])
+		;
+
+	cs_in = bytes_received[frame_length];
+
+	if (cs == cs_in) {
+		return true;
+	}
+	else {
+		return false;
+	}
+}
+
+void bailReceivedMessage(char e) {
+	HAL_UartWriteByte(e);
+	array_index = 0;
+	flushUartRx();
+	state = AWAITING_DATA;
+}
+
 void HAL_UartBytesReceived(uint16_t bytes) {
-	bool validMessage;
 	if (!NWK_Busy()) {
 		for (int i = 0; i < bytes; i++, array_index++) {
 			// get the bytes
@@ -229,55 +251,30 @@ void HAL_UartBytesReceived(uint16_t bytes) {
 			// get the length
 			if (array_index == 0) {
 				frame_length = bytes_received[array_index];
-
 				// if it takes longer than .25 sec to process the message, bail.
 				startTimeoutTimer();
+
+				// get the command
 			} else if (array_index == 1) {
 				cmd = bytes_received[array_index];
 
+				// message completed
 			} else if (array_index == frame_length) {
-				// Good message, stop timer
 				SYS_TimerStop(&timeoutTimer);
-
-				validMessage = true;
-
-				switch (cmd) {
-				case 1:
-					command = SEND;
-					break;
-				case 2:
-					command = ACK_SEND;
-					break;
-				case 3:
-					command = CONFIG_NWK;
-					break;
-				case 4:
-					command = GET_ADDRESS;
-					break;
-				default: {
-					// invalid command, let the client know and reset
-					HAL_UartWriteByte('E');
-					array_index = 0;
-					flushUartRx();
-					state = AWAITING_DATA;
-					validMessage = false;
-				}
-				}
-
-				// If we have a valid message, signal busy status and advance state machine
-				if (validMessage == true) {
+				if (isValidMessage()) {
 					not_ready_to_receive();
 					state = RECEIVED_DATA;
+				} else {
+					bailReceivedMessage('E');
 				}
 
 			} else if (array_index > frame_length) {
-				HAL_UartWriteByte('E');
-				array_index = 0;
-				flushUartRx();
-				state = AWAITING_DATA;
+				// This should never happen ...
+				bailReceivedMessage('E');
 			}
 		}
 	} else {
+		// Network is busy, we shouldn't be receiving data
 		flushUartRx();
 	}
 }
@@ -387,7 +384,7 @@ static void APP_TaskHandler(void) {
 		break;
 	case RECEIVED_DATA:
 		if (!NWK_Busy()) {
-			switch (command) {
+			switch (cmd) {
 			case SEND:
 				// send message out
 				send_message();
@@ -408,6 +405,8 @@ static void APP_TaskHandler(void) {
 				cmd_nwk_configured.cs = 0xFF;
 				initNetwork((cmd_config_nwk_t*) &bytes_received[1]);
 				break;
+			default:
+				bailReceivedMessage('E');
 			}
 		}
 	}
@@ -457,3 +456,4 @@ int main(void) {
 		APP_TaskHandler();
 	}
 }
+
