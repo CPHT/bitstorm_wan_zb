@@ -377,7 +377,7 @@ void initNetwork(cmd_config_nwk_t * nwk) {
 		HAL_UartWriteByte(frame[i]);
 	}
 
-	//config_nwk_done();
+	config_nwk_done();
 	array_index = 0;
 	state = AWAITING_DATA;
 }
@@ -448,7 +448,7 @@ void initNetwork2() {
 int main(void) {
 	// set PB7 and PB6 as output
 	DDRB |= _BV(PB7);
-	//DDRB |= _BV(PB6);
+	DDRB |= _BV(PB6);
 	// set pin low - not clear to receive
 	not_ready_to_receive();
 
@@ -459,7 +459,7 @@ int main(void) {
 	//initNetwork2(); // FOR TESTING
 
 	// set pin PB6 to low. This will tell the 1284 to configure zigbit nwk
-	//config_nwk();
+	config_nwk();
 
 	// ready to recieve
 	ready_to_receive();
