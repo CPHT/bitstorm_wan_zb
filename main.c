@@ -62,6 +62,7 @@
 
 /*- Definitions ------------------------------------------------------------*/
 // Put your preprocessor definitions here
+#define ACK 0x7E
 /*- Types ------------------------------------------------------------------*/
 // Put your type definitions here
 /*- Prototypes -------------------------------------------------------------*/
@@ -83,6 +84,7 @@ int ack_retry_count = 0;
 bool configured = false;
 uint8_t x_counter = 0;
 uint8_t counter = 0;
+uint8_t data;
 
 NWK_DataReq_t nwkDataReq;
 SYS_Timer_t timeoutTimer;
@@ -90,12 +92,12 @@ SYS_Timer_t timeoutTimer;
 typedef struct {
 	uint8_t command;
 	uint64_t address;
-	uint8_t cs;
+//uint8_t cs;
 } cmd_send_address_t;
 
 typedef struct {
 	uint8_t command;
-	uint8_t cs;
+//uint8_t cs;
 } cmd_nwk_configured_t;
 
 typedef struct {
@@ -248,7 +250,7 @@ void get_device_address()
 void send_address()
 {
 	uint8_t frame[80];
-	frame[0] = sizeof(cmd_send_address);
+	frame[0] = sizeof(cmd_send_address) + 1;
 
 	int frame_index = 1;
 	// message
@@ -256,6 +258,12 @@ void send_address()
 	{
 		frame[frame_index++] = ((uint8_t *) (&cmd_send_address))[i];
 	}
+
+	// checksum
+	uint8_t cs = 0;
+	for (int i = 0; i < frame_index; cs ^= frame[i++])
+		;
+	frame[frame_index++] = cs;
 
 	// send the bytes to the 1284
 	for (int i = 0; i < frame_index; i++)
@@ -296,7 +304,7 @@ void bailReceivedMessage(char e)
 
 void setSyncronizing()
 {
-	if(state == SYNCHRONIZING)
+	if (state == SYNCHRONIZING)
 		return;
 
 	HAL_LedOn(0);
@@ -310,60 +318,80 @@ void setSyncronizing()
 	startSynchronizeTimer();
 }
 
+//Function to send and receive data
+uint8_t spi_tranceiver(void)
+{
+
+	//Load data into buffer
+	while (!(SPSR & (1 << SPIF)))
+		;
+	//Wait until transmission complete
+	return SPDR ;                                 //Return received data
+}
 void HAL_UartBytesReceived(uint16_t bytes)
 {
-	for (int i = 0; i < bytes; i++, array_index++)
+}
+void SPI_Receiver()
+{
+	data = SPDR;
+
+	if (data == 'X')
 	{
-		uint8_t data = HAL_UartReadByte();
-
-		if (data == 'X')
+		x_counter++;
+		if (x_counter >= 10)
 		{
-			x_counter++;
-			if (x_counter >= 10)
-			{
-				setSyncronizing();
-			}
-		} else
-			x_counter = 0;
+			setSyncronizing();
+		}
+	} else
+		x_counter = 0;
 
-		if(array_index >= sizeof(bytes_received))
-			continue;
+	// place byte in buffer
+	bytes_received[array_index] = data;
 
-		if (state == AWAITING_DATA)
+	if (state == AWAITING_DATA)
+	{
+		// get the length of msg
+		if (array_index == 0)
 		{
-			// get the bytes
-			bytes_received[array_index] = data;
+			frame_length = bytes_received[array_index];
+			array_index++;
+			// if it takes longer than .25 sec to process the message, bail.
+			//startTimeoutTimer();
 
-			// get the length
-			if (array_index == 0)
+			// get the command
+		} else if (array_index == 1)
+		{
+			cmd = bytes_received[array_index];
+			array_index++;
+			// message completed
+		} else if (array_index == frame_length)
+		{
+			//HAL_UartWriteByte(array_index);
+//			for (int i = 0; i < array_index; i++)
+//			{
+//				HAL_UartWriteByte(bytes_received[i]);
+//			}
+			//SYS_TimerStop(&timeoutTimer);
+			if (isValidMessage())
 			{
-				frame_length = bytes_received[array_index];
-				// if it takes longer than .25 sec to process the message, bail.
-				startTimeoutTimer();
-
-				// get the command
-			} else if (array_index == 1)
+				not_ready_to_receive();
+				array_index = 0;
+				state = RECEIVED_DATA;
+			} else
 			{
-				cmd = bytes_received[array_index];
-
-				// message completed
-			} else if (array_index == frame_length)
-			{
-				SYS_TimerStop(&timeoutTimer);
-				if (isValidMessage())
-				{
-					not_ready_to_receive();
-					state = RECEIVED_DATA;
-				} else
-				{
-					bailReceivedMessage('F');
-				}
-
-			} else if (array_index > frame_length)
-			{
-				// This should never happen ...
-				bailReceivedMessage('G');
+				array_index = 0;
+				//bailReceivedMessage('F');
 			}
+
+		} else if (array_index > frame_length)
+		{
+			array_index = 0;
+			// This should never happen ...
+			//bailReceivedMessage('G');
+		}
+		else
+		{
+			array_index++;
 		}
 	}
 }
@@ -424,9 +452,6 @@ void send_message()
 	nwkDataReq.dstAddr = 0;
 	nwkDataReq.dstEndpoint = 0x0001;
 	nwkDataReq.srcEndpoint = 0x0001;
-	//if(command == ACK_SEND)
-	//nwkDataReq.options = NWK_OPT_ACK_REQUEST | NWK_OPT_ENABLE_SECURITY;
-	//nwkDataReq.options = NWK_OPT_ENABLE_SECURITY;
 	nwkDataReq.size = cmd->message_length;
 	nwkDataReq.data = &(cmd->dummy_data);
 	nwkDataReq.confirm = appDataConf;
@@ -450,7 +475,7 @@ void initNetwork(cmd_config_nwk_t * nwk)
 
 	// respond back
 	uint8_t frame[80];
-	frame[0] = sizeof(cmd_nwk_configured);
+	frame[0] = sizeof(cmd_nwk_configured) + 1;
 
 	int frame_index = 1;
 	// message
@@ -458,6 +483,12 @@ void initNetwork(cmd_config_nwk_t * nwk)
 	{
 		frame[frame_index++] = ((uint8_t *) (&cmd_nwk_configured))[i];
 	}
+
+	// checksum
+	uint8_t cs = 0;
+	for (int i = 0; i < frame_index; cs ^= frame[i++])
+		;
+	frame[frame_index++] = cs;
 
 	// send the bytes to the 1284
 	for (int i = 0; i < frame_index; i++)
@@ -476,7 +507,6 @@ void config_done()
 
 static void APP_TaskHandler(void)
 {
-
 	// Put your application code here
 	switch (state)
 	{
@@ -504,12 +534,12 @@ static void APP_TaskHandler(void)
 			case GET_ADDRESS:
 				get_device_address();
 				cmd_send_address.command = 0x04;
-				cmd_send_address.cs = 0xFF;
+				//cmd_send_address.cs = 0xFF;
 				send_address();
 				break;
 			case CONFIG_NWK:
 				cmd_nwk_configured.command = 0x03;
-				cmd_nwk_configured.cs = 0xFF;
+				//cmd_nwk_configured.cs = 0xFF;
 				initNetwork((cmd_config_nwk_t*) &bytes_received[1]);
 				break;
 			case CONFIG_DONE:
@@ -556,9 +586,20 @@ void WDT_Reset_Mode(void)
 
 }
 
+void init_spi_slave()
+{
+	DDRB &= ~(_BV(PB2)); // MOSI as input
+	DDRB |= (1 << PB3);   // MISO as OUTPUT
+	SPCR = (1 << SPE) | (1 << SPIE); // Enable SPI with interrupt
+}
+
+ISR(SPI_STC_vect)
+{
+	SPI_Receiver();
+}
+
 int main(void)
 {
-
 	// set PB7 and PB6 as output
 	DDRB |= _BV(PB7);
 	DDRB |= _BV(PB6);
@@ -571,48 +612,22 @@ int main(void)
 	HAL_LedOff(0);
 	//initNetwork2(); // FOR TESTING
 
-//	HAL_LedOn(0);
-//	_delay_ms(250);
-//	HAL_LedOff(0);
-//	_delay_ms(250);
-//	HAL_LedOn(0);
-//	_delay_ms(250);
-//	HAL_LedOff(0);
-//	_delay_ms(250);
-//	HAL_LedOn(0);
-//	_delay_ms(250);
-//	HAL_LedOff(0);
-//	_delay_ms(250);
-//	HAL_LedOn(0);
-//	_delay_ms(250);
-//	HAL_LedOff(0);
-//	_delay_ms(250);
-
 	// set pin PB6 to low. This will tell the 1284 to configure zigbit nwk
 	config_nwk();
 
 	// ready to recieve
 	setAwaitingData();
 
-	//debugInit();	// DEBUG DEBUG DEBUG
+	// DEBUG DEBUG DEBUG
+	//debugInit();
 
-	//HAL_LedOn(0);
-	//WDT_Reset_Mode();
+	init_spi_slave();
+	sei();
 	while (1)
 	{
 		SYS_TaskHandler();
 		HAL_UartTaskHandler();
 		APP_TaskHandler();
-
-		//wdt_reset();
-
-		//wdt_enable(WDTO_250MS);
-
-		//asm("wdr;");
-		//_delay_ms(2000);
-		//HAL_LedOn(0);
-
-		//while(1);
 
 	}
 }

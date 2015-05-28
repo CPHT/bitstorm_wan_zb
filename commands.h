@@ -20,6 +20,12 @@ typedef struct
 
 typedef struct
 {
+	uint8_t message_length;
+	uint8_t dummy_data; // used as place holder for payload/ not in original
+}cmd_send_status_header_t;
+
+typedef struct
+{
 	uint8_t command;
 	uint16_t pan_id;
 	uint16_t short_id;
