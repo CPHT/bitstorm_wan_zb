@@ -62,6 +62,10 @@
 
 /*- Definitions ------------------------------------------------------------*/
 // Put your preprocessor definitions here
+typedef bool (*appDataInd_ptr_t)(NWK_DataInd_t *ind);
+static bool appDataInd(NWK_DataInd_t *ind);
+void initNetwork(cmd_config_nwk_t * nwk, appDataInd_ptr_t);
+
 /*- Types ------------------------------------------------------------------*/
 // Put your type definitions here
 /*- Prototypes -------------------------------------------------------------*/
@@ -107,8 +111,6 @@ cmd_send_address_t cmd_send_address;
 cmd_nwk_configured_t cmd_nwk_configured;
 cmd_config_nwk_t cmd_config_ntw;
 msg_status_resp_t msg_status_resp;
-
-void initNetwork(cmd_config_nwk_t * nwk);
 
 enum states {
 	AWAITING_DATA, RECEIVED_DATA, AWAITING_CONF, RESEND_MSG, SYNCHRONIZING
@@ -439,7 +441,7 @@ void send_message()
 /*************************************************************************//**
  *****************************************************************************/
 
-void initNetwork(cmd_config_nwk_t * nwk)
+void initNetwork(cmd_config_nwk_t * nwk, appDataInd_ptr_t ind_ptr)
 {
 
 	NWK_SetAddr(nwk->short_id);
@@ -447,10 +449,11 @@ void initNetwork(cmd_config_nwk_t * nwk)
 	PHY_SetChannel(nwk->channel);
 	PHY_SetTxPower(0);
 	PHY_SetRxState(true);
+	NWK_OpenEndpoint(1, ind_ptr);
 
-	// respond back
+	// respond back to master
 	uint8_t frame[80];
-	frame[0] = sizeof(cmd_nwk_configured)+1;
+	frame[0] = sizeof(cmd_nwk_configured) + 1;
 
 	int frame_index = 1;
 	// message
@@ -516,7 +519,7 @@ static void APP_TaskHandler(void)
 			case CONFIG_NWK:
 				cmd_nwk_configured.command = 0x03;
 				cmd_nwk_configured.cs = 0xFF;
-				initNetwork((cmd_config_nwk_t*) &bytes_received[1]);
+				initNetwork((cmd_config_nwk_t*) &bytes_received[1], appDataInd);
 				break;
 			case CONFIG_DONE:
 				config_done();
@@ -536,30 +539,37 @@ static void APP_TaskHandler(void)
 	return true;
 }
 
-void initNetwork2()
+void initNetwork2(appDataInd_ptr_t ind_ptr)
 {
-	uint8_t b;
-	uint16_t short_addr;
-	b = boot_signature_byte_get(0x0102);
-	short_addr = b;
-	b = boot_signature_byte_get(0x0103);
-	short_addr |= ((uint16_t) b << 8);
-	NWK_SetAddr(short_addr);
+//	uint8_t b;
+//	uint16_t short_addr;
+//	b = boot_signature_byte_get(0x0102);
+//	short_addr = b;
+//	b = boot_signature_byte_get(0x0103);
+//	short_addr |= ((uint16_t) b << 8);
+	NWK_SetAddr(0x0000);
 	NWK_SetPanId(0x1973);
 	PHY_SetChannel(0x16);
 	PHY_SetTxPower(0);
 	PHY_SetRxState(true);
+	NWK_OpenEndpoint(1, ind_ptr);
+
 }
 
-void WDT_Reset_Mode(void)
+static void sendReceivedMsg(uint8_t *data, uint8_t size)
 {
-	cli();
-	wdt_reset();
-	/* Start timed sequence, use WDE bit*/WDTCSR = (1 << WDCE) | (1 << WDE);
-	// 64k cycles ~0.5 s
-	WDTCSR = (1 << WDP2) | (1 << WDP0);
-	sei();
+	for (int i = 0; i < size; i++)
+	{
+		HAL_UartWriteByte(data[i]);
+	}
+}
 
+static bool appDataInd(NWK_DataInd_t *ind)
+{
+	HAL_LedToggle(0);
+	sendReceivedMsg(ind->data, ind->size);
+
+	return true;
 }
 
 int main(void)
@@ -575,24 +585,7 @@ int main(void)
 	HAL_UartInit(38400);
 	HAL_LedInit();
 	HAL_LedOff(0);
-	//initNetwork2(); // FOR TESTING
-
-//	HAL_LedOn(0);
-//	_delay_ms(250);
-//	HAL_LedOff(0);
-//	_delay_ms(250);
-//	HAL_LedOn(0);
-//	_delay_ms(250);
-//	HAL_LedOff(0);
-//	_delay_ms(250);
-//	HAL_LedOn(0);
-//	_delay_ms(250);
-//	HAL_LedOff(0);
-//	_delay_ms(250);
-//	HAL_LedOn(0);
-//	_delay_ms(250);
-//	HAL_LedOff(0);
-//	_delay_ms(250);
+	initNetwork2(appDataInd); // FOR TESTING
 
 	// set pin PB6 to low. This will tell the 1284 to configure zigbit nwk
 	config_nwk();
@@ -600,25 +593,11 @@ int main(void)
 	// ready to recieve
 	setAwaitingData();
 
-	//debugInit();	// DEBUG DEBUG DEBUG
-
-	//HAL_LedOn(0);
-	//WDT_Reset_Mode();
 	while (1)
 	{
 		SYS_TaskHandler();
 		HAL_UartTaskHandler();
 		APP_TaskHandler();
-
-		//wdt_reset();
-
-		//wdt_enable(WDTO_250MS);
-
-		//asm("wdr;");
-		//_delay_ms(2000);
-		//HAL_LedOn(0);
-
-		//while(1);
 
 	}
 }
