@@ -62,8 +62,15 @@
 
 /*- Definitions ------------------------------------------------------------*/
 // Put your preprocessor definitions here
-//#define ROUTER
-#define COORDINATOR
+
+#define ROUTER
+//#define COORDINATOR
+#define SENDMSG_RAW
+#define SEND_TESTDATA
+
+#define ROUTER_ADDR 0x1337
+
+
 typedef bool (*appDataInd_ptr_t)(NWK_DataInd_t *ind);
 static bool appDataInd(NWK_DataInd_t *ind);
 void initNetwork(cmd_config_nwk_t * nwk, appDataInd_ptr_t);
@@ -156,38 +163,7 @@ static uint8_t ack;
 
 /*- Implementations --------------------------------------------------------*/
 
-//DEBUG DEBUG DEBUG DEBUG
-//DEBUG DEBUG DEBUG DEBUG
-//DEBUG DEBUG DEBUG DEBUG
-//DEBUG DEBUG DEBUG DEBUG
-//DEBUG DEBUG DEBUG DEBUG
-//void not_ready_to_receive();
-//SYS_Timer_t debugTimer;
-//char debugString[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789CPHT";
-//void debugTimerHandler(SYS_Timer_t *timer) {
-//	bytes_received[0] = 1 + 4 + sizeof(debugString);
-//	bytes_received[1] = 1;
-//	bytes_received[2] = 0x00;
-//	bytes_received[3] = 0x00;
-//	bytes_received[4] = 0x00;
-//	bytes_received[5] = sizeof(debugString);
-//	for (int i = 0, j = 6; debugString[i]; bytes_received[j++] =
-//			debugString[i++])
-//		;
-//	not_ready_to_receive();
-//	state = RECEIVED_DATA;
-//}
-//void debugInit() {
-//	debugTimer.interval = 10;
-//	debugTimer.mode = SYS_TIMER_INTERVAL_MODE;
-//	debugTimer.handler = debugTimerHandler;
-//	SYS_TimerStart(&debugTimer);
-//}
-//DEBUG DEBUG DEBUG DEBUG
-//DEBUG DEBUG DEBUG DEBUG
-//DEBUG DEBUG DEBUG DEBUG
-//DEBUG DEBUG DEBUG DEBUG
-//DEBUG DEBUG DEBUG DEBUG
+
 // Put your function implementations here
 void not_ready_to_receive()
 {
@@ -525,32 +501,6 @@ void config_done()
 	setAwaitingData();
 }
 
-void send_test_data()
-{
-	if (!NWK_Busy())
-	{
-		uint8_t frame;
-		// size of message
-
-		frame = 0x06;
-//		frame[1] = 0xBB;
-//		frame[2] = 0xBB;
-
-		nwkDataReq.dstAddr = 0x389C;
-		nwkDataReq.dstEndpoint = 0x0001;
-		nwkDataReq.srcEndpoint = 0x0001;
-		nwkDataReq.size = sizeof(frame);
-		nwkDataReq.data = &frame;
-		nwkDataReq.confirm = appDataConf;
-
-		NWK_DataReq(&nwkDataReq);
-		state = AWAITING_CONF;
-		HAL_LedOn(0);
-		_delay_ms(250);
-		HAL_LedOff(0);
-	}
-}
-
 static void APP_TaskHandler(void)
 {
 #ifdef COORDINATOR
@@ -606,7 +556,12 @@ static void APP_TaskHandler(void)
 
 void initNetwork2(appDataInd_ptr_t ind_ptr)
 {
+#ifdef COORDINATOR
 	NWK_SetAddr(0x0000);
+#else
+	NWK_SetAddr(0x1337);
+#endif
+
 	NWK_SetPanId(0x1973);
 	PHY_SetChannel(0x16);
 	PHY_SetTxPower(0);
@@ -647,6 +602,24 @@ static size_t cobsEncode(uint8_t *input, uint8_t length, uint8_t *output)
 	return write_index;
 }
 
+#ifdef SENDMSG_RAW
+static void sendReceivedMsgRAW(uint8_t *data, uint8_t size)
+{
+	HAL_UartWriteByte(0xB0);
+	HAL_UartWriteByte(0x0B);
+	HAL_UartWriteByte(0xBE);
+
+
+	for (uint8_t i = 0; i < size; i++)
+	{
+		//HAL_LedToggle(LED_DATA);
+		HAL_UartWriteByte(data[i]);
+	}
+	HAL_UartWriteByte(0xC0);
+	HAL_UartWriteByte(0xFF);
+	HAL_UartWriteByte(0xEE);
+}
+#else
 // send message that we received from the radio out the uart
 static void sendReceivedMsg(uint8_t *data, uint8_t size)
 {
@@ -679,38 +652,88 @@ static void sendReceivedMsg(uint8_t *data, uint8_t size)
 	// Zero becomes EOR marker
 	HAL_UartWriteByte(0x00);
 }
+#endif
+
 
 static bool appDataInd(NWK_DataInd_t *ind)
 {
-	HAL_LedToggle(0);
-	sendReceivedMsg(ind->data, ind->size);
+//	HAL_LedToggle(0);
+	HAL_LedOff(0);
+	sendReceivedMsgRAW(ind->data, ind->size);
 	//NWK_SetAckControl(ack);
 	return true;
 }
 
+
+#ifdef SEND_TESTDATA
+
+uint8_t frame[5];
+void startTestDataTimer();
+SYS_Timer_t testDataTimer;
+
+void timeoutTestData(SYS_Timer_t *timer) {
+	if (!NWK_Busy()) {
+		frame[0] = 0xAA;
+		frame[1] = 0xBB;
+		frame[2] = 0xCC;
+		frame[3] = 0xDD;
+		frame[4] = 0xEE;
+
+#if defined(COORDINATOR)
+		nwkDataReq.dstAddr = ROUTER_ADDR;
+#else
+		nwkDataReq.dstAddr = 0x0000;
+#endif
+		nwkDataReq.dstEndpoint = 1;
+		nwkDataReq.srcEndpoint = 1;
+		nwkDataReq.size = sizeof(frame);
+		nwkDataReq.data = frame;
+		nwkDataReq.confirm = appDataConf;
+
+		NWK_DataReq(&nwkDataReq);
+		HAL_LedOn(0);
+	}
+	startTestDataTimer();
+}
+
+void startTestDataTimer() {
+	testDataTimer.interval = 1000;
+	testDataTimer.mode = SYS_TIMER_INTERVAL_MODE;
+	testDataTimer.handler = timeoutTestData;
+	SYS_TimerStart(&testDataTimer);
+}
+
+#endif
+
+
+
 int main(void)
 {
 
-// set PB7 and PB6 as output
+	// set PB7 and PB6 as output
 	DDRB |= _BV(PB7);
 	DDRB |= _BV(PB6);
-// set pin low - not clear to receive
+	// set pin low - not clear to receive
 	not_ready_to_receive();
 
 	SYS_Init();
 	HAL_UartInit(38400);
 	HAL_LedInit();
 	HAL_LedOff(0);
-#ifdef COORDINATOR
-	initNetwork2(appDataInd); // FOR TESTING
-#endif
 
-// set pin PB6 to low. This will tell the 1284 to configure zigbit nwk
-#ifdef ROUTER
+#if defined(COORDINATOR) || defined(ROUTER)
+	initNetwork2(appDataInd); // FOR TESTING
+#else
+	// set pin PB6 to low. This will tell the 1284 to configure zigbit nwk
 	config_nwk();
 #endif
-// ready to recieve
+
+	// ready to recieve
 	setAwaitingData();
+
+#ifdef SEND_TESTDATA
+	startTestDataTimer();
+#endif
 
 	while (1)
 	{
