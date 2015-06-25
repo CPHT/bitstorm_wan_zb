@@ -62,12 +62,34 @@
 
 /*- Definitions ------------------------------------------------------------*/
 // Put your preprocessor definitions here
+//#define ROUTER
+#define COORDINATOR
 typedef bool (*appDataInd_ptr_t)(NWK_DataInd_t *ind);
 static bool appDataInd(NWK_DataInd_t *ind);
 void initNetwork(cmd_config_nwk_t * nwk, appDataInd_ptr_t);
+static size_t cobsEncode(uint8_t *input, uint8_t length, uint8_t *output);
 
 /*- Types ------------------------------------------------------------------*/
 // Put your type definitions here
+typedef struct PACK AppMessage_t {
+	uint8_t messageType;
+	uint8_t nodeType;
+	uint64_t extAddr;
+	uint16_t shortAddr;
+	uint64_t routerAddr;
+	uint16_t panId;
+	uint8_t workingChannel;
+	uint16_t parentShortAddr;
+	uint8_t lqi;
+	int8_t rssi;
+	uint8_t ackByte;
+
+	int32_t battery;
+	int32_t temperature;
+
+	uint8_t cs;
+
+} AppMessage_t;
 /*- Prototypes -------------------------------------------------------------*/
 void send_msg_status();
 void send_message();
@@ -87,6 +109,15 @@ int ack_retry_count = 0;
 bool configured = false;
 uint8_t x_counter = 0;
 uint8_t counter = 0;
+
+typedef struct {
+	uint8_t command;
+	uint8_t *data;
+	uint8_t cs;
+
+} msg_def_t;
+
+uint8_t cobs_buffer[sizeof(msg_def_t)];
 
 NWK_DataReq_t nwkDataReq;
 SYS_Timer_t timeoutTimer;
@@ -119,6 +150,8 @@ enum commands {
 	SEND = 1, ACK_SEND = 2, CONFIG_NWK = 3, GET_ADDRESS = 4, CONFIG_DONE = 7
 };
 static uint8_t state = AWAITING_DATA;
+
+static uint8_t ack;
 //static uint8_t command;
 
 /*- Implementations --------------------------------------------------------*/
@@ -372,6 +405,7 @@ void HAL_UartBytesReceived(uint16_t bytes)
 
 static void appDataConf(NWK_DataReq_t *req)
 {
+	ack = req->control;
 	if (NWK_SUCCESS_STATUS == req->status)
 	{
 		setAwaitingData();
@@ -423,7 +457,7 @@ void send_message()
 {
 	cmd_send_header_t * cmd;
 	cmd = (cmd_send_header_t*) &bytes_received[1];
-	nwkDataReq.dstAddr = 0;
+	nwkDataReq.dstAddr = 0x0000;
 	nwkDataReq.dstEndpoint = 0x0001;
 	nwkDataReq.srcEndpoint = 0x0001;
 	//if(command == ACK_SEND)
@@ -443,6 +477,8 @@ void send_message()
 
 void initNetwork(cmd_config_nwk_t * nwk, appDataInd_ptr_t ind_ptr)
 {
+	uint8_t cobs_size = 0;
+	uint8_t msg_size = 0;
 
 	NWK_SetAddr(nwk->short_id);
 	NWK_SetPanId(nwk->pan_id);
@@ -452,10 +488,10 @@ void initNetwork(cmd_config_nwk_t * nwk, appDataInd_ptr_t ind_ptr)
 	NWK_OpenEndpoint(1, ind_ptr);
 
 	// respond back to master
-	uint8_t frame[80];
-	frame[0] = sizeof(cmd_nwk_configured) + 1;
+	uint8_t frame[10];
+	msg_size = sizeof(cmd_nwk_configured) + 1;
 
-	int frame_index = 1;
+	int frame_index = 0;
 	// message
 	for (int i = 0; i < sizeof(cmd_nwk_configured); i++)
 	{
@@ -468,11 +504,17 @@ void initNetwork(cmd_config_nwk_t * nwk, appDataInd_ptr_t ind_ptr)
 		;
 	frame[frame_index++] = cs;
 
-	// send the bytes to the 1284
-	for (int i = 0; i < frame_index; i++)
+	// Stuff bytes (remove all zeros)
+	cobs_size = cobsEncode(frame, msg_size, cobs_buffer);
+
+	for (uint8_t i = 0; i < cobs_size; i++)
 	{
-		HAL_UartWriteByte(frame[i]);
+		//HAL_LedToggle(LED_DATA);
+		HAL_UartWriteByte(cobs_buffer[i]);
 	}
+
+	// Zero becomes EOR marker
+	HAL_UartWriteByte(0x00);
 
 	setAwaitingData();
 }
@@ -483,9 +525,37 @@ void config_done()
 	setAwaitingData();
 }
 
+void send_test_data()
+{
+	if (!NWK_Busy())
+	{
+		uint8_t frame;
+		// size of message
+
+		frame = 0x06;
+//		frame[1] = 0xBB;
+//		frame[2] = 0xBB;
+
+		nwkDataReq.dstAddr = 0x389C;
+		nwkDataReq.dstEndpoint = 0x0001;
+		nwkDataReq.srcEndpoint = 0x0001;
+		nwkDataReq.size = sizeof(frame);
+		nwkDataReq.data = &frame;
+		nwkDataReq.confirm = appDataConf;
+
+		NWK_DataReq(&nwkDataReq);
+		state = AWAITING_CONF;
+		HAL_LedOn(0);
+		_delay_ms(250);
+		HAL_LedOff(0);
+	}
+}
+
 static void APP_TaskHandler(void)
 {
-
+#ifdef COORDINATOR
+	//send_test_data();
+#endif
 	// Put your application code here
 	switch (state)
 	{
@@ -507,18 +577,13 @@ static void APP_TaskHandler(void)
 				send_message();
 				break;
 			case ACK_SEND:
+				// send message with ack
 				nwkDataReq.options = NWK_OPT_ACK_REQUEST | NWK_OPT_ENABLE_SECURITY;
 				send_message();
 				break;
-			case GET_ADDRESS:
-				get_device_address();
-				cmd_send_address.command = 0x04;
-				cmd_send_address.cs = 0xFF;
-				send_address();
-				break;
 			case CONFIG_NWK:
 				cmd_nwk_configured.command = 0x03;
-				cmd_nwk_configured.cs = 0xFF;
+				cmd_nwk_configured.cs = 0xAA;
 				initNetwork((cmd_config_nwk_t*) &bytes_received[1], appDataInd);
 				break;
 			case CONFIG_DONE:
@@ -541,56 +606,110 @@ static void APP_TaskHandler(void)
 
 void initNetwork2(appDataInd_ptr_t ind_ptr)
 {
-//	uint8_t b;
-//	uint16_t short_addr;
-//	b = boot_signature_byte_get(0x0102);
-//	short_addr = b;
-//	b = boot_signature_byte_get(0x0103);
-//	short_addr |= ((uint16_t) b << 8);
 	NWK_SetAddr(0x0000);
 	NWK_SetPanId(0x1973);
 	PHY_SetChannel(0x16);
 	PHY_SetTxPower(0);
 	PHY_SetRxState(true);
 	NWK_OpenEndpoint(1, ind_ptr);
-
 }
 
+static size_t cobsEncode(uint8_t *input, uint8_t length, uint8_t *output)
+{
+	size_t read_index = 0;
+	size_t write_index = 1;
+	size_t code_index = 0;
+	uint8_t code = 1;
+
+	while (read_index < length)
+	{
+		if (input[read_index] == 0)
+		{
+			output[code_index] = code;
+			code = 1;
+			code_index = write_index++;
+			read_index++;
+		} else
+		{
+			output[write_index++] = input[read_index++];
+			code++;
+			if (code == 0xFF)
+			{
+				output[code_index] = code;
+				code = 1;
+				code_index = write_index++;
+			}
+		}
+	}
+
+	output[code_index] = code;
+
+	return write_index;
+}
+
+// send message that we received from the radio out the uart
 static void sendReceivedMsg(uint8_t *data, uint8_t size)
 {
-	for (int i = 0; i < size; i++)
+	uint8_t cobs_size = 0;
+	// messages intended for the coordinator
+	// regular pings and router status messages
+	if (data[0] == 0x01 || data[0] == 0x08)
 	{
-		HAL_UartWriteByte(data[i]);
+		AppMessage_t * msg = (AppMessage_t *) data;
+
+		// Calculate checksum...Couples us to AppMessage_t, but whatever...
+		msg->cs = 0;
+		for (uint8_t i = 0; i < sizeof(AppMessage_t) - 1; i++)
+		{
+			uint8_t x = ((uint8_t*) msg)[i];
+			msg->cs ^= x;
+		}
 	}
+
+
+	// Stuff bytes (remove all zeros)
+	cobs_size = cobsEncode(data, size, cobs_buffer);
+
+	for (uint8_t i = 0; i < cobs_size; i++)
+	{
+		//HAL_LedToggle(LED_DATA);
+		HAL_UartWriteByte(cobs_buffer[i]);
+	}
+
+	// Zero becomes EOR marker
+	HAL_UartWriteByte(0x00);
 }
 
 static bool appDataInd(NWK_DataInd_t *ind)
 {
 	HAL_LedToggle(0);
 	sendReceivedMsg(ind->data, ind->size);
-
+	//NWK_SetAckControl(ack);
 	return true;
 }
 
 int main(void)
 {
 
-	// set PB7 and PB6 as output
+// set PB7 and PB6 as output
 	DDRB |= _BV(PB7);
 	DDRB |= _BV(PB6);
-	// set pin low - not clear to receive
+// set pin low - not clear to receive
 	not_ready_to_receive();
 
 	SYS_Init();
 	HAL_UartInit(38400);
 	HAL_LedInit();
 	HAL_LedOff(0);
+#ifdef COORDINATOR
 	initNetwork2(appDataInd); // FOR TESTING
+#endif
 
-	// set pin PB6 to low. This will tell the 1284 to configure zigbit nwk
+// set pin PB6 to low. This will tell the 1284 to configure zigbit nwk
+#ifdef ROUTER
 	config_nwk();
-
-	// ready to recieve
+#endif
+// ready to recieve
 	setAwaitingData();
 
 	while (1)
