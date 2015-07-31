@@ -13,7 +13,7 @@ typedef struct
 {
 	uint8_t command;
 	uint16_t pan_id;
-	uint8_t short_id;
+	uint16_t short_id;
 	uint8_t message_length;
 	uint8_t dummy_data; // used as place holder for payload/ not in original
 }cmd_send_header_t;
