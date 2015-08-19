@@ -207,7 +207,7 @@ void setAwaitingData()
 void timeoutTimerHandler(SYS_Timer_t *timer)
 {
 	// handle timeout
-	HAL_UartWriteByte('T'); // Send back a timeout error.
+	//HAL_UartWriteByte('T'); // Send back a timeout error.
 	setAwaitingData();
 }
 
@@ -231,7 +231,7 @@ void synchronizeTimerHandler(SYS_Timer_t *timer)
 {
 	// handle timeout
 	HAL_LedOff(0);
-	HAL_UartWriteByte('Z');
+	//HAL_UartWriteByte('Z');
 	setAwaitingData();
 }
 
@@ -314,7 +314,7 @@ void setSyncronizing()
 
 	HAL_LedOn(0);
 
-	HAL_UartWriteByte('A');
+	//HAL_UartWriteByte('A');
 	not_ready_to_receive();
 	state = SYNCHRONIZING;
 	array_index = 0;
@@ -370,13 +370,13 @@ void HAL_UartBytesReceived(uint16_t bytes)
 					state = RECEIVED_DATA;
 				} else
 				{
-					bailReceivedMessage('F');
+					//bailReceivedMessage('F');
 				}
 
 			} else if (array_index > frame_length)
 			{
 				// This should never happen ...
-				bailReceivedMessage('G');
+				//bailReceivedMessage('G');
 			}
 		}
 	}
@@ -401,7 +401,7 @@ static void appDataConf(NWK_DataReq_t *req)
 		} else
 		{
 			// send message to 1284 that message was not received
-			send_msg_status();
+			//send_msg_status();
 			setAwaitingData();
 			ack_retry_count = 0;
 			HAL_LedOff(0);
@@ -607,7 +607,7 @@ void initNetwork2(appDataInd_ptr_t ind_ptr)
 	NWK_SetAddr(0x1337);
 #endif
 
-	NWK_SetPanId(0x1989);
+	NWK_SetPanId(0x1973);
 	PHY_SetChannel(0x16);
 	PHY_SetTxPower(0);
 	PHY_SetRxState(true);
