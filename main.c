@@ -76,25 +76,6 @@ static size_t cobsEncode(uint8_t *input, uint8_t length, uint8_t *output);
 
 /*- Types ------------------------------------------------------------------*/
 // Put your type definitions here
-typedef struct PACK AppMessage_t {
-	uint8_t messageType;
-	uint8_t nodeType;
-	uint64_t extAddr;
-	uint16_t shortAddr;
-	uint64_t routerAddr;
-	uint16_t panId;
-	uint8_t workingChannel;
-	uint16_t parentShortAddr;
-	uint8_t lqi;
-	int8_t rssi;
-	uint8_t ackByte;
-
-	int32_t battery;
-	int32_t temperature;
-
-	uint8_t cs;
-
-} AppMessage_t;
 /*- Prototypes -------------------------------------------------------------*/
 void send_msg_status();
 void send_message();
@@ -668,22 +649,6 @@ static void sendReceivedMsgRAW(uint8_t *data, uint8_t size)
 static void sendReceivedMsg(uint8_t *data, uint8_t size)
 {
 	uint8_t cobs_size = 0;
-	AppMessage_t * msg = (AppMessage_t *) data;
-	// messages intended for the coordinator
-	// regular pings and router status messages
-	switch (data[0])
-	{
-	case PINGX:
-	case ROUTER_STATUS:
-		// Calculate checksum...Couples us to AppMessage_t, but whatever...
-		msg->cs = 0;
-		for (uint8_t i = 0; i < sizeof(AppMessage_t) - 1; i++)
-		{
-			uint8_t x = ((uint8_t*) msg)[i];
-			msg->cs ^= x;
-		}
-		break;
-	}
 
 	// Stuff bytes (remove all zeros)
 	cobs_size = cobsEncode(data, size, cobs_buffer);
