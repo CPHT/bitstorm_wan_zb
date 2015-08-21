@@ -105,6 +105,7 @@ typedef struct {
 
 } msg_def_t;
 
+//ERIC: Increase size of buffer to something like 80 bytes
 uint8_t cobs_buffer[sizeof(msg_def_t)];
 
 NWK_DataReq_t nwkDataReq;
@@ -331,6 +332,7 @@ void HAL_UartBytesReceived(uint16_t bytes)
 			// get the length
 			if (array_index == 0)
 			{
+				//ERIC: Check frame_length against max length
 				frame_length = bytes_received[array_index];
 				// if it takes longer than .25 sec to process the message, bail.
 				startTimeoutTimer();
@@ -563,6 +565,7 @@ static void APP_TaskHandler(void)
 				config_done();
 				break;
 			case 9:
+				//ERIC: Check for frame_length < size of rx_buffer (or is this being done elsewhere?)
 				memcpy(rx_buffer, bytes_received, frame_length);
 				send_message_to();
 			default:
@@ -574,7 +577,8 @@ static void APP_TaskHandler(void)
 }
 
 /*************************************************************************//**
- *****************************************************************************/bool network_ind(NWK_DataInd_t *ind)
+ *****************************************************************************/
+bool network_ind(NWK_DataInd_t *ind)
 {
 
 	return true;
@@ -649,6 +653,9 @@ static void sendReceivedMsgRAW(uint8_t *data, uint8_t size)
 static void sendReceivedMsg(uint8_t *data, uint8_t size)
 {
 	uint8_t cobs_size = 0;
+
+	//ERIC: Check for size/buffer overflow here... size should be < size of cobs_buffer
+	//ERIC: Is the size of cobs_buffer correct??  msg_def_t has a pointer inside - total of 3 bytes!
 
 	// Stuff bytes (remove all zeros)
 	cobs_size = cobsEncode(data, size, cobs_buffer);
