@@ -77,12 +77,13 @@ static size_t cobsEncode(uint8_t *input, uint8_t length, uint8_t *output);
 /*- Types ------------------------------------------------------------------*/
 // Put your type definitions here
 /*- Prototypes -------------------------------------------------------------*/
-void send_msg_status();
+void send_status_msg(uint8_t status);
 void send_message();
-void bailReceivedMessage(char e);
+void bailReceivedMessage(uint8_t e);
 void setSyncronizing();
 void synchronizeTimerHandler(SYS_Timer_t *timer);
 void config_done();
+void send_message_to();
 // Put your function prototypes here
 /*- Variables --------------------------------------------------------------*/
 
@@ -105,8 +106,7 @@ typedef struct {
 
 } msg_def_t;
 
-//ERIC: Increase size of buffer to something like 80 bytes
-uint8_t cobs_buffer[sizeof(msg_def_t)];
+uint8_t cobs_buffer[80];
 
 NWK_DataReq_t nwkDataReq;
 SYS_Timer_t timeoutTimer;
@@ -124,13 +124,13 @@ typedef struct {
 
 typedef struct {
 	uint8_t command;
-	uint8_t cs;
-} msg_status_resp_t;
+	uint8_t status;
+} wan_status_msg_t;
 
 cmd_send_address_t cmd_send_address;
 cmd_nwk_configured_t cmd_nwk_configured;
 cmd_config_nwk_t cmd_config_ntw;
-msg_status_resp_t msg_status_resp;
+wan_status_msg_t wan_status_msg;
 
 enum states {
 	AWAITING_DATA, RECEIVED_DATA, AWAITING_CONF, RESEND_MSG, SYNCHRONIZING
@@ -139,7 +139,10 @@ enum commands {
 	SEND = 1, ACK_SEND = 2, CONFIG_NWK = 3, GET_ADDRESS = 4, CONFIG_DONE = 7
 };
 enum msg_types {
-	PINGX = 0x01, ROUTER_STATUS = 0x08, CHANGESET = 0x09
+	PINGX = 0x01, ROUTER_STATUS = 0x08, CHANGESET = 0x09, WAN_STATUS = 0xEF
+};
+enum wan_statuses {
+	MSG_TIMEOUT = 0x0A, CONF_RETRIES = 0x0B, MSG_ERROR = 0x0C, INVALID_MSG = 0x0D, SYNC_MSG = 0x0E
 };
 static uint8_t state = AWAITING_DATA;
 
@@ -189,7 +192,7 @@ void setAwaitingData()
 void timeoutTimerHandler(SYS_Timer_t *timer)
 {
 	// handle timeout
-	//HAL_UartWriteByte('T'); // Send back a timeout error.
+	send_status_msg(MSG_TIMEOUT); // Send 1284 a timeout error.
 	setAwaitingData();
 }
 
@@ -211,9 +214,9 @@ void startSynchronizeTimer()
 
 void synchronizeTimerHandler(SYS_Timer_t *timer)
 {
-	// handle timeout
+	// sync done
 	HAL_LedOff(0);
-	//HAL_UartWriteByte('Z');
+	send_status_msg(SYNC_MSG);
 	setAwaitingData();
 }
 
@@ -240,27 +243,6 @@ void get_device_address()
 	cmd_send_address.address = extAddr;
 }
 
-void send_address()
-{
-	uint8_t frame[80];
-	frame[0] = sizeof(cmd_send_address);
-
-	int frame_index = 1;
-	// message
-	for (int i = 0; i < sizeof(cmd_send_address); i++)
-	{
-		frame[frame_index++] = ((uint8_t *) (&cmd_send_address))[i];
-	}
-
-	// send the bytes to the 1284
-	for (int i = 0; i < frame_index; i++)
-	{
-		HAL_UartWriteByte(frame[i]);
-	}
-
-	setAwaitingData();
-}
-
 bool isValidMessage(void)
 {
 	uint8_t cs = 0;
@@ -280,12 +262,11 @@ bool isValidMessage(void)
 	}
 }
 
-void bailReceivedMessage(char e)
+void bailReceivedMessage(uint8_t e)
 {
-	HAL_UartWriteByte(e);
+	send_status_msg(e);
 	array_index = 0;
 	flushUartRx();
-	//state = AWAITING_DATA;
 	setSyncronizing();
 }
 
@@ -296,7 +277,7 @@ void setSyncronizing()
 
 	HAL_LedOn(0);
 
-	//HAL_UartWriteByte('A');
+
 	not_ready_to_receive();
 	state = SYNCHRONIZING;
 	array_index = 0;
@@ -353,7 +334,7 @@ void HAL_UartBytesReceived(uint16_t bytes)
 					state = RECEIVED_DATA;
 				} else
 				{
-					//bailReceivedMessage('F');
+					bailReceivedMessage(INVALID_MSG);
 				}
 
 			} else if (array_index > frame_length)
@@ -371,48 +352,59 @@ static void appDataConf(NWK_DataReq_t *req)
 	if (NWK_SUCCESS_STATUS == req->status)
 	{
 		setAwaitingData();
+		ack_retry_count = 0;
 		HAL_LedOff(0);
-		//SYS_TimerStart(&debugTimer);	//DEBUG DEBUG DEBUG
 	} else
 	{
 		if (ack_retry_count <= 3)
 		{
 			// retry to send the message 3 times
-			//nwkDataReq.options = NWK_OPT_ACK_REQUEST | NWK_OPT_ENABLE_SECURITY;
 			state = RESEND_MSG;
 			ack_retry_count++;
 		} else
 		{
 			// send message to 1284 that message was not received
-			//send_msg_status();
+			send_status_msg(CONF_RETRIES);
 			setAwaitingData();
 			ack_retry_count = 0;
 			HAL_LedOff(0);
-			//SYS_TimerStart(&debugTimer);	//DEBUG DEBUG DEBUG
 		}
 	}
 }
 
-void send_msg_status()
+void send_status_msg(uint8_t status)
 {
-	msg_status_resp.command = 0x07;
-	msg_status_resp.cs = 0xFF;
-	// respond back
-	uint8_t frame[80];
-	frame[0] = sizeof(msg_status_resp);
+	uint8_t cobs_size = 0;
+	uint8_t msg_size = 0;
+	wan_status_msg.command = WAN_STATUS;
+	wan_status_msg.status = status;
 
-	int frame_index = 1;
+	uint8_t frame[20];
+	msg_size = sizeof(wan_status_msg_t) + 1;
+
+	int frame_index = 0;
 	// message
-	for (int i = 0; i < sizeof(msg_status_resp); i++)
+	for (int i = 0; i < sizeof(wan_status_msg); i++)
 	{
-		frame[frame_index++] = ((uint8_t *) (&msg_status_resp))[i];
+		frame[frame_index++] = ((uint8_t *) (&wan_status_msg))[i];
 	}
 
-	// send the bytes to the 1284
-	for (int i = 0; i < frame_index; i++)
+	// checksum
+	uint8_t cs = 0;
+	for (int i = 0; i < frame_index; cs ^= frame[i++])
+		;
+	frame[frame_index++] = cs;
+
+	// Stuff bytes (remove all zeros)
+	cobs_size = cobsEncode(frame, msg_size, cobs_buffer);
+
+	for (uint8_t i = 0; i < cobs_size; i++)
 	{
-		HAL_UartWriteByte(frame[i]);
+		HAL_UartWriteByte(cobs_buffer[i]);
 	}
+
+	// Zero becomes EOR marker
+	HAL_UartWriteByte(0x00);
 }
 
 void send_message()
@@ -431,54 +423,8 @@ void send_message()
 	HAL_LedOn(0);
 }
 
-uint8_t frame[8];
-void send_message_to()
-{
-	frame[0] = 0x09;
-	frame[1] = 0x89;
-	frame[2] = 0x19;
-	frame[3] = 0x45;
-	frame[4] = 0xDD;
-	frame[5] = 0x02;
-	frame[6] = 0x09;
-	frame[7] = 0xAA;
-
-//	HAL_UartWriteByte(0xAB);
-//	HAL_UartWriteByte(0xAB);
-//	HAL_UartWriteByte(0xAB);
-//	HAL_UartWriteByte(0xAB);
-
-//	for (uint8_t i = 0; i < 9; i++)
-//		{
-//			//HAL_LedToggle(LED_DATA);
-//			HAL_UartWriteByte(rx_buffer[i]);
-//		}
-
-	cmd_send_header_t * cmd;
-	cmd = (cmd_send_header_t*) &rx_buffer[1];
-
-	// send this message to the requested router
-	nwkDataReq.dstAddr = cmd->short_id;
-
-	nwkDataReq.dstEndpoint = 1;
-	nwkDataReq.srcEndpoint = 1;
-	nwkDataReq.size = cmd->message_length;
-	nwkDataReq.data = &(cmd->dummy_data);
-	nwkDataReq.confirm = appDataConf;
-
-	NWK_DataReq(&nwkDataReq);
-	state = AWAITING_CONF;
-	HAL_LedOn(0);
-}
-
-/*************************************************************************//**
- *****************************************************************************/
-
 void initNetwork(cmd_config_nwk_t * nwk, appDataInd_ptr_t ind_ptr)
 {
-	uint8_t cobs_size = 0;
-	uint8_t msg_size = 0;
-
 	NWK_SetAddr(nwk->short_id);
 	NWK_SetPanId(nwk->pan_id);
 	PHY_SetChannel(nwk->channel);
@@ -487,37 +433,6 @@ void initNetwork(cmd_config_nwk_t * nwk, appDataInd_ptr_t ind_ptr)
 	NWK_OpenEndpoint(1, ind_ptr);
 
 	config_done();
-
-//	// respond back to master
-//	uint8_t frame[10];
-//	msg_size = sizeof(cmd_nwk_configured) + 1;
-//
-//	int frame_index = 0;
-//	// message
-//	for (int i = 0; i < sizeof(cmd_nwk_configured); i++)
-//	{
-//		frame[frame_index++] = ((uint8_t *) (&cmd_nwk_configured))[i];
-//	}
-//
-//	// checksum
-//	uint8_t cs = 0;
-//	for (int i = 0; i < frame_index; cs ^= frame[i++])
-//		;
-//	frame[frame_index++] = cs;
-//
-//	// Stuff bytes (remove all zeros)
-//	cobs_size = cobsEncode(frame, msg_size, cobs_buffer);
-//
-//	for (uint8_t i = 0; i < cobs_size; i++)
-//	{
-//		//HAL_LedToggle(LED_DATA);
-//		HAL_UartWriteByte(cobs_buffer[i]);
-//	}
-//
-//	// Zero becomes EOR marker
-//	HAL_UartWriteByte(0x00);
-//
-//	setAwaitingData();
 }
 
 void config_done()
@@ -534,10 +449,6 @@ static void APP_TaskHandler(void)
 	// Put your application code here
 	switch (state)
 	{
-//	case AWAITING_DATA:
-//		if (!NWK_Busy())
-//			ready_to_receive();
-//		break;
 	case RESEND_MSG:
 		if (!NWK_Busy())
 			send_message();
@@ -564,23 +475,41 @@ static void APP_TaskHandler(void)
 			case CONFIG_DONE:
 				config_done();
 				break;
-			case 9:
-				//ERIC: Check for frame_length < size of rx_buffer (or is this being done elsewhere?)
-				memcpy(rx_buffer, bytes_received, frame_length);
-				send_message_to();
+			case CHANGESET:
+				if (frame_length <= sizeof(rx_buffer))
+				{
+					memcpy(rx_buffer, bytes_received, frame_length);
+					send_message_to();
+				}
 			default:
-				bailReceivedMessage('E');
+				send_status_msg(MSG_ERROR);
 			}
 		}
 	}
 
 }
 
-/*************************************************************************//**
- *****************************************************************************/
+void send_message_to()
+{
+	cmd_send_header_t * cmd;
+	cmd = (cmd_send_header_t*) &rx_buffer[1];
+
+	// send this message to the requested router
+	nwkDataReq.dstAddr = cmd->short_id;
+
+	nwkDataReq.dstEndpoint = 1;
+	nwkDataReq.srcEndpoint = 1;
+	nwkDataReq.size = cmd->message_length;
+	nwkDataReq.data = &(cmd->dummy_data);
+	nwkDataReq.confirm = appDataConf;
+
+	NWK_DataReq(&nwkDataReq);
+	state = AWAITING_CONF;
+	HAL_LedOn(0);
+}
+
 bool network_ind(NWK_DataInd_t *ind)
 {
-
 	return true;
 }
 
@@ -654,15 +583,14 @@ static void sendReceivedMsg(uint8_t *data, uint8_t size)
 {
 	uint8_t cobs_size = 0;
 
-	//ERIC: Check for size/buffer overflow here... size should be < size of cobs_buffer
-	//ERIC: Is the size of cobs_buffer correct??  msg_def_t has a pointer inside - total of 3 bytes!
+	if (size > sizeof(cobs_buffer))
+		return;
 
 	// Stuff bytes (remove all zeros)
 	cobs_size = cobsEncode(data, size, cobs_buffer);
 
 	for (uint8_t i = 0; i < cobs_size; i++)
 	{
-		//HAL_LedToggle(LED_DATA);
 		HAL_UartWriteByte(cobs_buffer[i]);
 	}
 
@@ -739,8 +667,8 @@ int main(void)
 #if defined(COORDINATOR)
 	initNetwork2(appDataInd); // FOR TESTING
 #else
-			// set pin PB6 to low. This will tell the 1284 to configure zigbit nwk
-			config_nwk();
+	// set pin PB6 to low. This will tell the 1284 to configure zigbit nwk
+	config_nwk();
 #endif
 
 	// ready to recieve
