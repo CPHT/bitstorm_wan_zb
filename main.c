@@ -62,10 +62,11 @@
 
 /*- Definitions ------------------------------------------------------------*/
 // Put your preprocessor definitions here
-#define ROUTER
-//#define COORDINATOR
+//#define ROUTER
+#define COORDINATOR
 //#define SENDMSG_RAW
 //#define SEND_TESTDATA
+//#define HELLO_WORLD
 
 #define ROUTER_ADDR 0x389C
 
@@ -73,6 +74,7 @@ typedef bool (*appDataInd_ptr_t)(NWK_DataInd_t *ind);
 static bool appDataInd(NWK_DataInd_t *ind);
 void initNetwork(cmd_config_nwk_t * nwk, appDataInd_ptr_t);
 static size_t cobsEncode(uint8_t *input, uint8_t length, uint8_t *output);
+void helloWordTimerHandler(SYS_Timer_t *timer);
 
 /*- Types ------------------------------------------------------------------*/
 // Put your type definitions here
@@ -110,6 +112,9 @@ uint8_t cobs_buffer[80];
 
 NWK_DataReq_t nwkDataReq;
 SYS_Timer_t timeoutTimer;
+
+SYS_Timer_t helloWordTimer;
+
 
 typedef struct {
 	uint8_t command;
@@ -219,6 +224,34 @@ void synchronizeTimerHandler(SYS_Timer_t *timer)
 	send_status_msg(SYNC_MSG);
 	setAwaitingData();
 }
+
+///////TESTING//////////////
+void startHelloWordTimer()
+{
+	helloWordTimer.interval = 1000;
+	helloWordTimer.mode = SYS_TIMER_INTERVAL_MODE;
+	helloWordTimer.handler = helloWordTimerHandler;
+	SYS_TimerStart(&helloWordTimer);
+}
+
+void helloWordTimerHandler(SYS_Timer_t *timer)
+{
+	HAL_UartWriteByte('H');
+	HAL_UartWriteByte('E');
+	HAL_UartWriteByte('L');
+	HAL_UartWriteByte('L');
+	HAL_UartWriteByte('O');
+	HAL_UartWriteByte('W');
+	HAL_UartWriteByte('O');
+	HAL_UartWriteByte('R');
+	HAL_UartWriteByte('L');
+	HAL_UartWriteByte('D');
+
+	HAL_LedToggle(0);
+	SYS_TimerStart(&helloWordTimer);
+
+}
+////////////////////////////
 
 void get_device_address()
 {
@@ -515,6 +548,9 @@ bool network_ind(NWK_DataInd_t *ind)
 
 void initNetwork2(appDataInd_ptr_t ind_ptr)
 {
+#ifdef HELLO_WORLD
+	startHelloWordTimer();
+#endif
 #ifdef COORDINATOR
 	NWK_SetAddr(0x0000);
 #else
